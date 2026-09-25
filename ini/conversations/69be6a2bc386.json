@@ -1,0 +1,38 @@
+{
+  "id": "69be6a2bc386",
+  "title": "对话 09-25 10:03",
+  "created_at": "2026-09-25T10:03:14.094646",
+  "updated_at": "2026-09-25T10:29:53.293258",
+  "messages": [
+    {
+      "role": "user",
+      "content": "ji",
+      "timestamp": "2026-09-25T10:03:14.096919"
+    },
+    {
+      "role": "assistant",
+      "content": "回答",
+      "timestamp": "2026-09-25T10:03:14.099311"
+    },
+    {
+      "role": "user",
+      "content": "sfajkf",
+      "timestamp": "2026-09-25T10:03:16.434768"
+    },
+    {
+      "role": "assistant",
+      "content": "回答",
+      "timestamp": "2026-09-25T10:03:16.436376"
+    },
+    {
+      "role": "user",
+      "content": "afsd11",
+      "timestamp": "2026-09-25T10:29:53.291004"
+    },
+    {
+      "role": "assistant",
+      "content": "回答",
+      "timestamp": "2026-09-25T10:29:53.292670"
+    }
+  ]
+}
