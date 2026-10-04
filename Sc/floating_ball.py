@@ -6,6 +6,7 @@ ApexAgent 悬浮球 + 弹出面板
 import sys
 import os
 import json
+import queue
 from datetime import datetime
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QMenu, QVBoxLayout, QHBoxLayout,
@@ -525,6 +526,204 @@ class HistoryDialog(QDialog):
 
 
 # ============================================================
+#  Action 卡片 — 微光骨架屏 + 中文命令名
+# ============================================================
+# 命令名中英文映射
+_CMD_ZH_MAP = {
+    "ReadFile": "读取文件", "ReadFolder": "读取文件夹", "SearchFile": "搜索文件",
+    "RemoveFile": "删除文件", "OpenExe": "打开程序", "ReadRunning": "查看进程",
+    "KillProcess": "终止进程", "GetSystemInfo": "系统信息", "GetDiskUsage": "磁盘使用",
+    "GetProcessList": "进程列表", "GetNetworkStatus": "网络状态",
+    "GetActiveWindow": "活动窗口", "CloseWindow": "关闭窗口", "ResizeWindow": "调整窗口",
+    "FocusWindow": "窗口置顶", "ClipboardRead": "读取剪贴板", "ClipboardWrite": "写入剪贴板",
+    "Screenshot": "截图", "MouseMove": "鼠标移动", "MouseClick": "鼠标点击",
+    "RegistryRead": "读取注册表", "RegistryWrite": "写入注册表",
+    "ServiceControl": "服务控制", "RunCommand": "运行命令", "Shutdown": "关机",
+    "NameChange": "重命名", "DiffJsonFile": "JSON修改", "while": "循环",
+    "for": "遍历", "If": "条件套件",
+}
+
+
+def _parse_action_card_info(action_xml: str) -> list:
+    """从 action XML 中提取命令名列表，返回 [(英, 中), ...]"""
+    cmds = []
+    if not action_xml or not action_xml.strip():
+        return cmds
+    try:
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(f"<root>{action_xml}</root>")
+        for el in root:
+            tag = el.tag.split("}")[-1] if "}" in el.tag else el.tag
+            cmds.append((tag, _CMD_ZH_MAP.get(tag, tag)))
+    except ET.ParseError:
+        pass
+    return cmds
+
+
+class ActionCard(QFrame):
+    """单个 action 卡片：流式微光骨架屏 → 命令列表 → 执行结果"""
+
+    CARD_WIDTH = 370
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._state = "streaming"  # streaming | ready | done
+        self._commands = []        # [(en, zh), ...]
+        self._results = []         # [(en, success, output), ...]
+        self._shimmer_offset = 0.0
+        self._setup_ui()
+        self._start_shimmer()
+
+    def _setup_ui(self):
+        self.setFixedWidth(self.CARD_WIDTH)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
+        self.setStyleSheet("background: transparent; border: none;")
+
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(8, 6, 8, 6)
+        self._layout.setSpacing(4)
+
+        # 状态标签
+        self._status_label = QLabel("⚡ 接收指令中...")
+        self._status_label.setFont(QFont("Microsoft YaHei", 9))
+        self._status_label.setStyleSheet("color: #60b0ff; background: transparent;")
+        self._layout.addWidget(self._status_label)
+
+        # 命令列表容器
+        self._cmd_container = QWidget()
+        self._cmd_container.setStyleSheet("background: transparent;")
+        self._cmd_layout = QVBoxLayout(self._cmd_container)
+        self._cmd_layout.setContentsMargins(0, 0, 0, 0)
+        self._cmd_layout.setSpacing(2)
+        self._layout.addWidget(self._cmd_container)
+
+        # 结果容器
+        self._result_container = QWidget()
+        self._result_container.setStyleSheet("background: transparent;")
+        self._result_layout = QVBoxLayout(self._result_container)
+        self._result_layout.setContentsMargins(0, 0, 0, 0)
+        self._result_layout.setSpacing(2)
+        self._result_container.hide()
+        self._layout.addWidget(self._result_container)
+
+    def _start_shimmer(self):
+        self._shimmer_timer = QTimer(self)
+        self._shimmer_timer.timeout.connect(self._tick_shimmer)
+        self._shimmer_timer.start(30)
+
+    def _tick_shimmer(self):
+        self._shimmer_offset = (self._shimmer_offset + 0.04) % 2.0
+        self.update()
+
+    def _stop_shimmer(self):
+        if hasattr(self, "_shimmer_timer") and self._shimmer_timer.isActive():
+            self._shimmer_timer.stop()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(self.rect())
+
+        # 背景
+        if self._state == "streaming":
+            # 微光骨架屏：移动的渐变光束
+            bg_grad = QLinearGradient(
+                rect.left() + (self._shimmer_offset - 1) * rect.width(),
+                0,
+                rect.left() + self._shimmer_offset * rect.width(),
+                0
+            )
+            bg_grad.setColorAt(0.0, QColor(45, 55, 90, 200))
+            bg_grad.setColorAt(0.5, QColor(80, 100, 160, 210))
+            bg_grad.setColorAt(1.0, QColor(45, 55, 90, 200))
+        elif self._state == "ready":
+            bg_grad = QLinearGradient(0, 0, 0, self.height())
+            bg_grad.setColorAt(0.0, QColor(40, 50, 80, 200))
+            bg_grad.setColorAt(1.0, QColor(35, 45, 70, 200))
+        else:
+            bg_grad = QLinearGradient(0, 0, 0, self.height())
+            bg_grad.setColorAt(0.0, QColor(38, 48, 75, 200))
+            bg_grad.setColorAt(1.0, QColor(32, 42, 65, 200))
+
+        path = QPainterPath()
+        path.addRoundedRect(rect, 10, 10)
+        painter.fillPath(path, QBrush(bg_grad))
+
+        # 边框光圈 — streaming 时更亮
+        if self._state == "streaming":
+            alpha = int(70 + 30 * abs(1 - self._shimmer_offset))
+            pen = QPen(QColor(100, 160, 255, alpha), 2.0)
+        else:
+            pen = QPen(QColor(80, 120, 200, 50), 1.2)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), 10, 10)
+
+        painter.end()
+
+    def set_commands(self, commands: list):
+        """设置解析好的命令列表 [(en, zh), ...]"""
+        self._stop_shimmer()
+        self._state = "ready"
+        self._commands = commands
+        self._status_label.setText("📋 等待执行...")
+        self._status_label.setStyleSheet("color: #f0c060; background: transparent;")
+        self._rebuild_cmd_list()
+
+    def _rebuild_cmd_list(self):
+        for i in reversed(range(self._cmd_layout.count())):
+            w = self._cmd_layout.itemAt(i).widget()
+            if w:
+                w.deleteLater()
+        for en, zh in self._commands:
+            lbl = QLabel(f"  {zh}")
+            lbl.setFont(QFont("Microsoft YaHei", 10))
+            lbl.setStyleSheet("color: #c8d0e8; background: rgba(255,255,255,8); "
+                              "border-radius: 6px; padding: 4px 8px;")
+            self._cmd_layout.addWidget(lbl)
+
+    def set_results(self, results_data: dict):
+        """设置执行结果 results_data = executor.execute() 返回值"""
+        self._state = "done"
+        success = results_data.get("success", False)
+        results_list = results_data.get("results", [])
+
+        self._status_label.setText("✅ 执行完成" if success else "❌ 执行失败")
+        self._status_label.setStyleSheet(
+            "color: #40c080; background: transparent;" if success
+            else "color: #f06060; background: transparent;"
+        )
+
+        self._result_container.show()
+        for i in reversed(range(self._result_layout.count())):
+            w = self._result_layout.itemAt(i).widget()
+            if w:
+                w.deleteLater()
+
+        if results_list:
+            for r in results_list:
+                if isinstance(r, dict):
+                    text = r.get("output", str(r))
+                else:
+                    text = str(r)
+                if len(text) > 120:
+                    text = text[:120] + "..."
+                lbl = QLabel(text)
+                lbl.setFont(QFont("Microsoft YaHei", 9))
+                lbl.setWordWrap(True)
+                lbl.setStyleSheet("color: #90a0c0; background: transparent; padding: 2px 6px;")
+                self._result_layout.addWidget(lbl)
+        else:
+            err = results_data.get("error", "")
+            if err:
+                lbl = QLabel(str(err)[:200])
+                lbl.setFont(QFont("Microsoft YaHei", 9))
+                lbl.setWordWrap(True)
+                lbl.setStyleSheet("color: #f08080; background: transparent; padding: 2px 6px;")
+                self._result_layout.addWidget(lbl)
+
+
+# ============================================================
 #  弹出面板 (11cm × 6cm，45% 磨砂玻璃，可拖动)
 # ============================================================
 class PanelWindow(QWidget):
@@ -537,6 +736,9 @@ class PanelWindow(QWidget):
 
     _panel_opacity = ConfigManager.get_opacity()
 
+    # 跨线程安全：queue + timer 轮询，逐 chunk 渲染
+    _STREAM_POLL_MS = 20
+
     def __init__(self):
         super().__init__()
         self._drag_pos = QPoint()
@@ -544,6 +746,13 @@ class PanelWindow(QWidget):
         self._conv_id = ConfigManager.get_current_conversation() or ""
         self._agent = ApexAgent()
         self._is_processing = False
+        # action 卡片
+        self._action_card = None
+        self._action_buffer = ""
+        # 流式队列 + 轮询定时器
+        self._chunk_queue = queue.Queue()
+        self._poll_timer = QTimer()
+        self._poll_timer.timeout.connect(self._drain_queue)
         self._init_ui()
         self._build_content()
         self._restore_conversation()
@@ -816,51 +1025,168 @@ class PanelWindow(QWidget):
 
         self._add_message(text, is_user=True)
 
-        # 显示等待指示器
-        self._thinking_bubble = self._add_message("思考中...", is_user=False, is_loading=True)
+        # 创建双气泡：thinking 灰色小字 + speaking 白色大字（立刻显示等待提示）
+        self._thinking_bubble = self._add_stream_bubble("⏳ 思考中...", is_thinking=True)
+        self._speaking_bubble = self._add_stream_bubble("⏳ 等待回复...", is_thinking=False)
 
-        # 构建对话上下文（role: user/assistant 格式）
+        # 构建对话上下文
         context_messages = []
         for msg in conv.get("messages", []):
             if msg["role"] in ("user", "assistant"):
                 ctx_msg = {"role": msg["role"], "content": msg["content"]}
                 context_messages.append(ctx_msg)
 
-        # 异步调用 Agent
+        # 重置队列状态（线程安全）
+        self._chunk_queue = queue.Queue()
+
+        # 启动轮询定时器
+        self._poll_timer.start(self._STREAM_POLL_MS)
+
+        # 异步 Agent — 子线程把 chunk 推入 queue
         self._agent.run_async(
             user_message=text,
             conversation_messages=context_messages,
-            on_thinking=self._on_agent_thinking,
-            on_complete=self._on_agent_complete,
+            on_chunk=self._push_chunk,
+            on_complete=self._push_complete,
         )
 
-    def _on_agent_thinking(self, thinking: str):
-        """Agent 每轮思考回调 — 实时更新 UI"""
-        if hasattr(self, "_thinking_bubble") and self._thinking_bubble:
-            self._thinking_bubble.setText(f"🤔 {thinking}")
-            QTimer.singleShot(30, self._scroll_to_bottom)
+    def _push_chunk(self, chunk_type: str, text: str):
+        """子线程回调：把 chunk 推入队列"""
+        self._chunk_queue.put(("chunk", chunk_type, text))
+
+    def _push_complete(self, result: dict):
+        """子线程回调：把完成信号推入队列"""
+        self._chunk_queue.put(("done", result))
+
+    def _drain_queue(self):
+        """主线程定时器：每次只取 1 条 chunk，立刻 repaint 渲染到屏幕"""
+        try:
+            item = self._chunk_queue.get_nowait()
+            kind = item[0]
+            if kind == "chunk":
+                _, chunk_type, text = item
+                if chunk_type == "thinking":
+                    if hasattr(self, "_thinking_bubble") and self._thinking_bubble:
+                        cur = self._thinking_bubble.text()
+                        if cur.startswith("⏳"):
+                            cur = ""
+                        self._thinking_bubble.setText(cur + text)
+                        self._thinking_bubble.repaint()
+                elif chunk_type == "speaking":
+                    if hasattr(self, "_speaking_bubble") and self._speaking_bubble:
+                        cur = self._speaking_bubble.text()
+                        if cur.startswith("⏳"):
+                            cur = ""
+                        self._speaking_bubble.setText(cur + text)
+                        self._speaking_bubble.repaint()
+                elif chunk_type == "action":
+                    self._drain_action_chunk(text)
+            elif kind == "done":
+                self._drain_done(item[1])
+                return
+            self._scroll_to_bottom()
+        except queue.Empty:
+            pass
+
+    def _drain_action_chunk(self, text: str):
+        """处理 action 流式 chunk：懒创建卡片 + 微光骨架屏"""
+        self._action_buffer += text
+        if self._action_card is None and self._action_buffer.strip():
+            self._action_card = ActionCard()
+            # 插入到消息列表末尾
+            self._msg_layout.addWidget(self._action_card)
+            self._msg_layout.addStretch()
+        # 骨架屏自动以 shimmer 动画运行，不需额外更新
+
+    def _drain_done(self, result: dict):
+        """Agent 完成：停止轮询，闭合 action 卡片"""
+        self._poll_timer.stop()
+        self._chunk_queue = queue.Queue()
+        action_content = result.get("action", "") or self._action_buffer.strip()
+        if action_content and hasattr(self, "_action_card") and self._action_card:
+            cmds = _parse_action_card_info(action_content)
+            if cmds:
+                self._action_card.set_commands(cmds)
+            else:
+                # 无有效命令 → 移除卡片
+                self._msg_layout.removeWidget(self._action_card)
+                self._action_card.deleteLater()
+                self._action_card = None
+        elif hasattr(self, "_action_card") and self._action_card:
+            self._msg_layout.removeWidget(self._action_card)
+            self._action_card.deleteLater()
+            self._action_card = None
+        self._action_buffer = ""
+        self._on_agent_complete(result)
+
+    def _add_stream_bubble(self, text, is_thinking):
+        """创建流式气泡：thinking=灰色小字, speaking=白色大字"""
+        bubble = QLabel(text)
+        bubble.setWordWrap(True)
+        bubble.setMaximumWidth(int(self.PANEL_WIDTH * 0.85))
+
+        if is_thinking:
+            bubble.setFont(QFont("Microsoft YaHei", 9))
+            bubble.setStyleSheet("""
+                QLabel {
+                    background-color: rgba(60, 60, 80, 100);
+                    color: #9098b8;
+                    border-radius: 10px;
+                    padding: 6px 10px;
+                    margin: 1px 0;
+                    border-left: 3px solid rgba(120, 140, 200, 80);
+                }
+            """)
+        else:
+            bubble.setFont(QFont("Microsoft YaHei", 12))
+            bubble.setStyleSheet("""
+                QLabel {
+                    background-color: rgba(255, 255, 255, 14);
+                    color: #f0f0f8;
+                    border-radius: 12px;
+                    padding: 10px 14px;
+                    margin: 2px 0;
+                }
+            """)
+
+        wrapper = QWidget()
+        wrapper.setStyleSheet("background: transparent;")
+        wrapper_layout = QHBoxLayout(wrapper)
+        wrapper_layout.setContentsMargins(0, 0, 0, 0)
+        wrapper_layout.addWidget(bubble)
+        wrapper_layout.addStretch()
+
+        if self._msg_layout.count() > 0:
+            last = self._msg_layout.itemAt(self._msg_layout.count() - 1)
+            if last.spacerItem():
+                self._msg_layout.removeItem(last)
+
+        self._msg_layout.addWidget(wrapper)
+        self._msg_layout.addStretch()
+        QTimer.singleShot(30, self._scroll_to_bottom)
+        return bubble
 
     def _on_agent_complete(self, result: dict):
-        """Agent 推理完成回调"""
+        """Agent 推理完成回调 — 保留流式气泡，不删除"""
         self._is_processing = False
 
-        # 移除思考气泡，替换为最终回复
-        if hasattr(self, "_thinking_bubble") and self._thinking_bubble:
-            self._thinking_bubble.deleteLater()
-            self._thinking_bubble = None
-
-        thinking = result.get("thinking", "")
-        success = result.get("success", True)
+        speaking = result.get("speaking", "")
         error = result.get("error", "")
 
+        # 如果有错误，追加到 speaking 气泡
         if error:
-            final_text = f"❌ 出错了: {error}"
-        elif thinking:
-            final_text = thinking
-        else:
-            final_text = "任务已完成。"
+            if hasattr(self, "_speaking_bubble") and self._speaking_bubble:
+                current = self._speaking_bubble.text()
+                self._speaking_bubble.setText(current + f"\n\n❌ 出错了: {error}")
 
-        # 保存到对话
+        # 更新 action 卡片执行结果
+        if hasattr(self, "_action_card") and self._action_card:
+            exec_result = result.get("exec_result")
+            if exec_result is not None:
+                self._action_card.set_results(exec_result)
+
+        # 保存到对话（仅 speaking）
+        final_text = speaking.strip() if speaking else (error or "任务已完成。")
         conv = ConversationStore.load(self._conv_id)
         if conv:
             conv["messages"].append({
@@ -868,12 +1194,14 @@ class PanelWindow(QWidget):
                 "content": final_text,
                 "timestamp": datetime.now().isoformat()
             })
-            # 保存完整的上下文消息（含中间轮次）
             agent_messages = result.get("messages", [])
             conv["_agent_context"] = agent_messages
             ConversationStore.save(conv)
 
-        self._add_message(final_text, is_user=False)
+        # 清空引用但不删除气泡（气泡就是最终结果）
+        self._thinking_bubble = None
+        self._speaking_bubble = None
+        self._action_card = None
 
     def _ensure_conversation(self):
         if not self._conv_id:
