@@ -79,6 +79,57 @@ class ConfigManager:
 
 
 # ============================================================
+#  AI 配置管理
+# ============================================================
+class AIConfig:
+    DEFAULT = {
+        "AI": {
+            "provider": "ollama",
+            "ollama_url": "http://localhost:11434",
+            "ollama_model": "",
+            "openai_url": "https://api.openai.com/v1",
+            "openai_key": "",
+            "openai_model": "gpt-4o",
+        }
+    }
+
+    @classmethod
+    def load_all(cls) -> dict:
+        cfg = ConfigManager.load()
+        return {
+            "provider": cfg.get("AI", "provider", fallback="ollama"),
+            "ollama_url": cfg.get("AI", "ollama_url", fallback="http://localhost:11434"),
+            "ollama_model": cfg.get("AI", "ollama_model", fallback=""),
+            "openai_url": cfg.get("AI", "openai_url", fallback="https://api.openai.com/v1"),
+            "openai_key": cfg.get("AI", "openai_key", fallback=""),
+            "openai_model": cfg.get("AI", "openai_model", fallback="gpt-4o"),
+        }
+
+    @classmethod
+    def save_all(cls, data: dict):
+        cfg = ConfigManager.load()
+        if "AI" not in cfg:
+            cfg.add_section("AI")
+        for key, value in data.items():
+            cfg.set("AI", key, str(value))
+        ConfigManager.save(cfg)
+
+    @classmethod
+    def get_provider(cls) -> str:
+        cfg = ConfigManager.load()
+        return cfg.get("AI", "provider", fallback="ollama")
+
+    @classmethod
+    def is_configured(cls) -> bool:
+        ai = cls.load_all()
+        if ai["provider"] == "ollama":
+            return bool(ai.get("ollama_model", "").strip())
+        elif ai["provider"] == "openai":
+            return bool(ai.get("openai_key", "").strip() and ai.get("openai_model", "").strip())
+        return False
+
+
+# ============================================================
 #  对话存储（JSON）
 # ============================================================
 class ConversationStore:

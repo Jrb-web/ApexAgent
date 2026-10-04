@@ -5,11 +5,13 @@ ApexAgent 悬浮球 + 弹出面板
 
 import sys
 import os
+import json
 from datetime import datetime
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QMenu, QVBoxLayout, QHBoxLayout,
     QLabel, QTextEdit, QPushButton, QSlider, QDialog,
-    QScrollArea, QFrame, QSizePolicy, QGraphicsOpacityEffect
+    QScrollArea, QFrame, QSizePolicy, QGraphicsOpacityEffect,
+    QComboBox, QLineEdit, QTabWidget,
 )
 from PyQt6.QtCore import (
     Qt, QPoint, QPointF, QPropertyAnimation, QEasingCurve,
@@ -19,7 +21,8 @@ from PyQt6.QtGui import (
     QPainter, QBrush, QColor, QLinearGradient, QRadialGradient,
     QFont, QPen, QAction, QPainterPath, QPixmap, QIcon, QCursor
 )
-from .storage import ConfigManager, ConversationStore
+from .storage import ConfigManager, ConversationStore, AIConfig
+from .agent import ApexAgent
 
 
 ASSET_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "asset")
@@ -539,6 +542,8 @@ class PanelWindow(QWidget):
         self._drag_pos = QPoint()
         self._dragging = False
         self._conv_id = ConfigManager.get_current_conversation() or ""
+        self._agent = ApexAgent()
+        self._is_processing = False
         self._init_ui()
         self._build_content()
         self._restore_conversation()
@@ -790,6 +795,9 @@ class PanelWindow(QWidget):
         text = self._input.toPlainText().strip()
         if not text:
             return
+        if self._is_processing:
+            return
+        self._is_processing = True
         self._input.clear()
 
         if self._hint_label.isVisible():
@@ -802,23 +810,70 @@ class PanelWindow(QWidget):
             "content": text,
             "timestamp": datetime.now().isoformat()
         })
-        # 用第一条消息做标题
         if len(conv["messages"]) == 1:
             ConversationStore.update_title(self._conv_id, text)
         ConversationStore.save(conv)
 
         self._add_message(text, is_user=True)
 
-        # AI 固定回复
-        ai_text = "回答"
-        conv["messages"].append({
-            "role": "assistant",
-            "content": ai_text,
-            "timestamp": datetime.now().isoformat()
-        })
-        ConversationStore.save(conv)
+        # 显示等待指示器
+        self._thinking_bubble = self._add_message("思考中...", is_user=False, is_loading=True)
 
-        self._add_message(ai_text, is_user=False)
+        # 构建对话上下文（role: user/assistant 格式）
+        context_messages = []
+        for msg in conv.get("messages", []):
+            if msg["role"] in ("user", "assistant"):
+                ctx_msg = {"role": msg["role"], "content": msg["content"]}
+                context_messages.append(ctx_msg)
+
+        # 异步调用 Agent
+        self._agent.run_async(
+            user_message=text,
+            conversation_messages=context_messages,
+            on_thinking=self._on_agent_thinking,
+            on_complete=self._on_agent_complete,
+        )
+
+    def _on_agent_thinking(self, thinking: str):
+        """Agent 每轮思考回调 — 实时更新 UI"""
+        if hasattr(self, "_thinking_bubble") and self._thinking_bubble:
+            self._thinking_bubble.setText(f"🤔 {thinking}")
+            QTimer.singleShot(30, self._scroll_to_bottom)
+
+    def _on_agent_complete(self, result: dict):
+        """Agent 推理完成回调"""
+        self._is_processing = False
+
+        # 移除思考气泡，替换为最终回复
+        if hasattr(self, "_thinking_bubble") and self._thinking_bubble:
+            self._thinking_bubble.deleteLater()
+            self._thinking_bubble = None
+
+        thinking = result.get("thinking", "")
+        success = result.get("success", True)
+        error = result.get("error", "")
+
+        if error:
+            final_text = f"❌ 出错了: {error}"
+        elif thinking:
+            final_text = thinking
+        else:
+            final_text = "任务已完成。"
+
+        # 保存到对话
+        conv = ConversationStore.load(self._conv_id)
+        if conv:
+            conv["messages"].append({
+                "role": "assistant",
+                "content": final_text,
+                "timestamp": datetime.now().isoformat()
+            })
+            # 保存完整的上下文消息（含中间轮次）
+            agent_messages = result.get("messages", [])
+            conv["_agent_context"] = agent_messages
+            ConversationStore.save(conv)
+
+        self._add_message(final_text, is_user=False)
 
     def _ensure_conversation(self):
         if not self._conv_id:
@@ -874,7 +929,7 @@ class PanelWindow(QWidget):
         self._hint_label.show()
         self._hint_opacity.setOpacity(1.0)
 
-    def _add_message(self, text, is_user):
+    def _add_message(self, text, is_user, is_loading=False):
         bubble = QLabel(text)
         bubble.setWordWrap(True)
         bubble.setFont(QFont("Microsoft YaHei", 10))
@@ -889,6 +944,17 @@ class PanelWindow(QWidget):
                     border-radius: 12px;
                     padding: 8px 12px;
                     margin: 0;
+                }
+            """)
+        elif is_loading:
+            bubble.setStyleSheet("""
+                QLabel {
+                    background-color: rgba(255, 200, 60, 30);
+                    color: #f0c060;
+                    border-radius: 12px;
+                    padding: 8px 12px;
+                    margin: 0;
+                    font-style: italic;
                 }
             """)
         else:
@@ -926,6 +992,8 @@ class PanelWindow(QWidget):
         # 滚动到底部
         QTimer.singleShot(50, self._scroll_to_bottom)
 
+        return bubble
+
     def _scroll_to_bottom(self):
         sb = self._scroll.verticalScrollBar()
         sb.setValue(sb.maximum())
@@ -944,7 +1012,7 @@ class PanelWindow(QWidget):
 #  设置弹窗
 # ============================================================
 class SettingsDialog(QDialog):
-    """设置对话框 — 面板透明度调节"""
+    """设置对话框 — 面板透明度 + AI 配置"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -954,18 +1022,14 @@ class SettingsDialog(QDialog):
             | Qt.WindowType.Dialog
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedSize(280, 160)
+        self.setFixedSize(340, 420)
         self._init_ui()
 
     def _init_ui(self):
-        self.setStyleSheet("""
-            QDialog {
-                background: transparent;
-            }
-        """)
+        self.setStyleSheet("QDialog { background: transparent; }")
 
         container = QWidget(self)
-        container.setGeometry(0, 0, 280, 160)
+        container.setGeometry(0, 0, 340, 420)
         container.setStyleSheet("""
             QWidget {
                 background-color: rgba(22, 25, 42, 230);
@@ -975,8 +1039,8 @@ class SettingsDialog(QDialog):
         """)
 
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(20, 14, 20, 14)
-        layout.setSpacing(10)
+        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setSpacing(6)
 
         # ---- 标题 ----
         title = QLabel("设置")
@@ -985,10 +1049,57 @@ class SettingsDialog(QDialog):
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
 
-        # ---- 透明度标签 + 数值 ----
+        # ---- Tab ----
+        self._tabs = QTabWidget()
+        self._tabs.setStyleSheet("""
+            QTabWidget::pane {
+                border: none;
+                background: transparent;
+            }
+            QTabBar::tab {
+                color: #8088b0;
+                background: transparent;
+                padding: 4px 16px;
+                font-size: 11px;
+                font-family: "Microsoft YaHei";
+                border: none;
+                border-bottom: 2px solid transparent;
+            }
+            QTabBar::tab:selected {
+                color: #a0c8ff;
+                border-bottom: 2px solid #6098f0;
+            }
+        """)
+
+        self._panel_tab = self._build_panel_tab()
+        self._ai_tab = self._build_ai_tab()
+        self._tabs.addTab(self._panel_tab, "面板")
+        self._tabs.addTab(self._ai_tab, "AI")
+        layout.addWidget(self._tabs)
+
+        # ---- 底部按钮 ----
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+
+        close_btn = QPushButton("确定")
+        close_btn.setFixedHeight(30)
+        close_btn.setFont(QFont("Microsoft YaHei", 10))
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.setStyleSheet(self._btn_style())
+        close_btn.clicked.connect(self._save_and_close)
+        btn_row.addWidget(close_btn)
+
+        layout.addLayout(btn_row)
+
+    def _build_panel_tab(self):
+        w = QWidget()
+        w.setStyleSheet("background: transparent;")
+        l = QVBoxLayout(w)
+        l.setContentsMargins(4, 8, 4, 4)
+        l.setSpacing(10)
+
         value_layout = QHBoxLayout()
         value_layout.setSpacing(8)
-
         label = QLabel("面板透明度")
         label.setFont(QFont("Microsoft YaHei", 10))
         label.setStyleSheet("color: #c0c8e0; background: transparent; border: none;")
@@ -1001,84 +1112,199 @@ class SettingsDialog(QDialog):
         value_layout.addWidget(label)
         value_layout.addStretch()
         value_layout.addWidget(self._value_label)
-        layout.addLayout(value_layout)
+        l.addLayout(value_layout)
 
-        # ---- 滑块 ----
         self._slider = QSlider(Qt.Orientation.Horizontal)
         self._slider.setRange(20, 90)
         self._slider.setValue(int((1.0 - PanelWindow._panel_opacity) * 100))
-        self._slider.setStyleSheet("""
-            QSlider {
-                background: transparent;
-                border: none;
-            }
-            QSlider::groove:horizontal {
-                height: 6px;
-                background: rgba(255, 255, 255, 15);
-                border-radius: 3px;
-            }
-            QSlider::handle:horizontal {
-                width: 18px;
-                height: 18px;
-                margin: -6px 0;
-                background: qradialgradient(
-                    cx:0.5, cy:0.5, radius:0.5,
-                    fx:0.3, fy:0.3,
-                    stop:0 #a0c8ff,
-                    stop:0.7 #4078d0,
-                    stop:1 #1a3a70
-                );
-                border-radius: 9px;
-            }
-            QSlider::handle:horizontal:hover {
-                background: qradialgradient(
-                    cx:0.5, cy:0.5, radius:0.5,
-                    fx:0.3, fy:0.3,
-                    stop:0 #c0e0ff,
-                    stop:0.7 #6098f0,
-                    stop:1 #2a4a90
-                );
-            }
-            QSlider::sub-page:horizontal {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 rgba(70, 130, 240, 180),
-                    stop:1 rgba(100, 160, 255, 150)
-                );
-                border-radius: 3px;
-            }
-        """)
+        self._slider.setStyleSheet(self._slider_style())
         self._slider.valueChanged.connect(self._on_slider_changed)
-        layout.addWidget(self._slider)
+        l.addWidget(self._slider)
+        l.addStretch()
+        return w
 
-        # ---- 关闭按钮 ----
-        close_btn = QPushButton("确定")
-        close_btn.setFixedHeight(30)
-        close_btn.setFont(QFont("Microsoft YaHei", 10))
-        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        close_btn.setStyleSheet("""
+    def _build_ai_tab(self):
+        ai = AIConfig.load_all()
+        w = QWidget()
+        w.setStyleSheet("background: transparent;")
+        l = QVBoxLayout(w)
+        l.setContentsMargins(4, 8, 4, 4)
+        l.setSpacing(6)
+
+        # 提供商选择
+        prov_layout = QHBoxLayout()
+        prov_label = QLabel("AI 提供商")
+        prov_label.setFont(QFont("Microsoft YaHei", 10))
+        prov_label.setStyleSheet("color: #c0c8e0; background: transparent; border: none;")
+        prov_layout.addWidget(prov_label)
+        prov_layout.addStretch()
+        self._provider_combo = QComboBox()
+        self._provider_combo.addItems(["ollama", "openai"])
+        self._provider_combo.setCurrentText(ai.get("provider", "ollama"))
+        self._provider_combo.setStyleSheet(self._combo_style())
+        self._provider_combo.currentTextChanged.connect(self._on_provider_changed)
+        prov_layout.addWidget(self._provider_combo)
+        l.addLayout(prov_layout)
+
+        # Ollama 配置组
+        self._ollama_group = QWidget()
+        self._ollama_group.setStyleSheet("background: transparent;")
+        og = QVBoxLayout(self._ollama_group)
+        og.setContentsMargins(0, 2, 0, 2)
+        og.setSpacing(5)
+        og.addLayout(self._labeled_input("Ollama URL", "ollama_url", ai.get("ollama_url", "")))
+        self._ollama_model_input = self._labeled_input_widget("模型名称", "ollama_model", ai.get("ollama_model", ""))
+        og.addLayout(self._ollama_model_input)
+        l.addWidget(self._ollama_group)
+
+        # OpenAI 配置组
+        self._openai_group = QWidget()
+        self._openai_group.setStyleSheet("background: transparent;")
+        og2 = QVBoxLayout(self._openai_group)
+        og2.setContentsMargins(0, 2, 0, 2)
+        og2.setSpacing(5)
+        og2.addLayout(self._labeled_input("API URL", "openai_url", ai.get("openai_url", "")))
+        og2.addLayout(self._labeled_input("API Key", "openai_key", ai.get("openai_key", ""), echo=True))
+        og2.addLayout(self._labeled_input("模型名称", "openai_model", ai.get("openai_model", "")))
+        l.addWidget(self._openai_group)
+
+        # 初始显示/隐藏
+        self._on_provider_changed(ai.get("provider", "ollama"))
+
+        l.addStretch()
+        return w
+
+    def _labeled_input(self, label_text, field_name, default_val, echo=False):
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        lbl = QLabel(label_text)
+        lbl.setFixedWidth(60)
+        lbl.setFont(QFont("Microsoft YaHei", 9))
+        lbl.setStyleSheet("color: #9098b0; background: transparent; border: none;")
+        row.addWidget(lbl)
+        edit = QLineEdit(default_val)
+        edit.setFont(QFont("Microsoft YaHei", 9))
+        edit.setStyleSheet(self._input_style())
+        if echo:
+            edit.setEchoMode(QLineEdit.EchoMode.Password)
+        setattr(self, f"_field_{field_name}", edit)
+        row.addWidget(edit, 1)
+        return row
+
+    def _labeled_input_widget(self, label_text, field_name, default_val):
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        lbl = QLabel(label_text)
+        lbl.setFixedWidth(60)
+        lbl.setFont(QFont("Microsoft YaHei", 9))
+        lbl.setStyleSheet("color: #9098b0; background: transparent; border: none;")
+        row.addWidget(lbl)
+        edit = QLineEdit(default_val)
+        edit.setFont(QFont("Microsoft YaHei", 9))
+        edit.setStyleSheet(self._input_style())
+        setattr(self, f"_field_{field_name}", edit)
+        row.addWidget(edit, 1)
+        return row
+
+    def _on_provider_changed(self, provider):
+        if provider == "ollama":
+            self._ollama_group.show()
+            self._openai_group.hide()
+        else:
+            self._ollama_group.hide()
+            self._openai_group.show()
+
+    def _save_and_close(self):
+        PanelWindow._panel_opacity = 1.0 - self._slider.value() / 100.0
+        ConfigManager.set_opacity(PanelWindow._panel_opacity)
+
+        ai_data = {
+            "provider": self._provider_combo.currentText(),
+            "ollama_url": getattr(self, "_field_ollama_url", QLineEdit()).text().strip(),
+            "ollama_model": getattr(self, "_field_ollama_model", QLineEdit()).text().strip(),
+            "openai_url": getattr(self, "_field_openai_url", QLineEdit()).text().strip(),
+            "openai_key": getattr(self, "_field_openai_key", QLineEdit()).text().strip(),
+            "openai_model": getattr(self, "_field_openai_model", QLineEdit()).text().strip(),
+        }
+        AIConfig.save_all(ai_data)
+
+        for widget in QApplication.topLevelWidgets():
+            if isinstance(widget, PanelWindow):
+                widget.update()
+        self.accept()
+
+    def _on_slider_changed(self, val):
+        self._value_label.setText(f"{val}%")
+
+    # ------- 样式 --------
+    def _btn_style(self):
+        return """
             QPushButton {
                 background-color: rgba(70, 130, 240, 160);
                 color: #ffffff;
                 border: none;
                 border-radius: 10px;
             }
-            QPushButton:hover {
-                background-color: rgba(90, 150, 255, 200);
-            }
-            QPushButton:pressed {
-                background-color: rgba(50, 100, 200, 180);
-            }
-        """)
-        close_btn.clicked.connect(self.accept)
-        layout.addWidget(close_btn)
+            QPushButton:hover { background-color: rgba(90, 150, 255, 200); }
+            QPushButton:pressed { background-color: rgba(50, 100, 200, 180); }
+        """
 
-    def _on_slider_changed(self, val):
-        PanelWindow._panel_opacity = 1.0 - val / 100.0
-        ConfigManager.set_opacity(PanelWindow._panel_opacity)
-        self._value_label.setText(f"{val}%")
-        for widget in QApplication.topLevelWidgets():
-            if isinstance(widget, PanelWindow):
-                widget.update()
+    def _input_style(self):
+        return """
+            QLineEdit {
+                background-color: rgba(255, 255, 255, 12);
+                color: #e0e0e0;
+                border: 1px solid rgba(255, 255, 255, 20);
+                border-radius: 6px;
+                padding: 3px 6px;
+            }
+            QLineEdit:focus {
+                border: 1px solid rgba(120, 160, 255, 80);
+            }
+        """
+
+    def _combo_style(self):
+        return """
+            QComboBox {
+                background-color: rgba(255, 255, 255, 12);
+                color: #e0e0e0;
+                border: 1px solid rgba(255, 255, 255, 20);
+                border-radius: 6px;
+                padding: 2px 6px;
+                min-width: 80px;
+                font-size: 10px;
+            }
+            QComboBox::drop-down { border: none; }
+            QComboBox QAbstractItemView {
+                background-color: #1a1d2e;
+                color: #e0e0e0;
+                selection-background-color: #3a4f80;
+                border: 1px solid #3a3f55;
+            }
+        """
+
+    def _slider_style(self):
+        return """
+            QSlider { background: transparent; border: none; }
+            QSlider::groove:horizontal {
+                height: 6px; background: rgba(255, 255, 255, 15); border-radius: 3px;
+            }
+            QSlider::handle:horizontal {
+                width: 18px; height: 18px; margin: -6px 0;
+                background: qradialgradient(cx:0.5, cy:0.5, radius:0.5,
+                    fx:0.3, fy:0.3, stop:0 #a0c8ff, stop:0.7 #4078d0, stop:1 #1a3a70);
+                border-radius: 9px;
+            }
+            QSlider::handle:horizontal:hover {
+                background: qradialgradient(cx:0.5, cy:0.5, radius:0.5,
+                    fx:0.3, fy:0.3, stop:0 #c0e0ff, stop:0.7 #6098f0, stop:1 #2a4a90);
+            }
+            QSlider::sub-page:horizontal {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 rgba(70, 130, 240, 180), stop:1 rgba(100, 160, 255, 150));
+                border-radius: 3px;
+            }
+        """
 
 
 # ============================================================
