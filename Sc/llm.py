@@ -1,36 +1,66 @@
 """
 ApexAgent LLM 客户端 — 流式输出 + 多提供商
-- ollama: 本地 Ollama 服务
+- ollama: 本地 Ollama 服务 (think:true 原生分离思考)
 - openai: OpenAI 兼容 API
-输出格式: <thinking>内部思考</thinking><speaking>外部回复</speaking><action>指令</action>
+输出格式: <speaking>外部回复</speaking><action>指令</action>
 """
 
 import json
+import os
+from datetime import datetime
 from .storage import AIConfig
+
+
+# ============================================================
+#  调试日志 — 记录 AI 底层原始输出
+# ============================================================
+def _debug_log(text: str):
+    """向 _ai_debug.log 追加带时间戳的日志行（已被 .gitignore 覆盖）"""
+    try:
+        log_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        log_path = os.path.join(log_dir, "_ai_debug.log")
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"[{ts}] {text}\n")
+    except Exception:
+        pass  # 日志写入失败不阻塞主流程
 
 
 REQUEST_TIMEOUT = 180
 
-SYSTEM_PROMPT = """你是 ApexAgent，一个运行在桌面上的 AI 智能体助手。
+SYSTEM_PROMPT = """# 角色介绍
+你是 ApexAgent，一个运行在用户本地桌面环境中的AI智能体助手。
+你能够理解用户的自然语言请求，一边和用户对话，一边按需调用桌面操作指令，操控本地电脑完成任务。
+你的核心职责：友好地与用户交流，同时根据需求执行电脑操作；不需要操作电脑时，仅做对话应答。
+你输出内容必须严格遵守固定XML标签格式，格式规则优先级高于一切。
 
-你必须严格按照以下 XML 标签格式输出回复，不要输出任何标签之外的文字：
+# 强制输出格式（最高优先级，所有回复必须遵守）
+你的输出只能由固定顺序的两个XML标签组成，不允许标签以外出现任何字符。
+顺序固定：<speaking>内容</speaking> 紧接着 <action>内容</action>
 
-<thinking>你的真实内部推理过程——分析用户意图、制定计划、判断下一步行动。写具体内容。</thinking>
-<speaking>你对用户说的话。用自然流畅的中文回答。</speaking>
-<action>需要执行的操作指令，不需要操作时留空</action>
+规则清单：
+1. <speaking>：放置你对用户说的自然中文对话。禁止为空，禁止写入任何操作指令、XML标签、类XML语法。
+2. <action>：放置电脑操作指令。无需执行操作时，在标签内写一个半角空格，标签绝对不能省略。
+3. 标签只能使用英文尖括号 < >，禁止中文符号。
+4. 禁止输出Markdown、代码块、解释文字、前置说明、后置总结。
+5. <speaking>内部绝对不能出现任何操作指令，所有操作指令只能写在<action>内部。
 
-【关键约束 - 违反将导致系统崩溃】
-- 三个标签缺一不可，顺序固定：thinking → speaking → action
-- 所有文字必须放在标签内部，标签外不得出现任何字符
-- thinking 必须写真实分析，禁止写"分析用户意图"之类的模板文字
-- speaking 必须写对用户说的话，禁止空白
-- action 不需要操作时写一个空格即可，不可省略标签
-- 绝对禁止输出 markdown 格式
-- 绝对禁止使用  response 标签或任何其他标签格式
-- 标签必须用英文尖括号 < > ，禁止用中文冒号：或括号（）
-- 【最高优先级】绝对禁止在 thinking 和 speaking 中提及、列举、展示任何 XML 指令或标签（如 <ReadFile>、<RunCommand> 等）。XML 指令只能出现在 action 标签内。thinking 只写分析推理，speaking 只写自然语言回复给用户，不得包含任何类XML格式内容
+## 【正确示例】
+用户：打开记事本
+<speaking>好的，我马上为你打开记事本。</speaking>
+<action><OpenExe 程序路径>C:\\Windows\\notepad.exe</OpenExe></action>
 
-类XML指令列表（放在 action 标签内）:
+用户：你好
+<speaking>你好，我是ApexAgent，有什么可以帮你的？</speaking>
+<action> </action>
+
+## 【错误示例，绝对不能这样输出】
+❌ 错误1（标签外文字）：现在我来回答你 <speaking>xxx</speaking><action> </action>
+❌ 错误2（把指令写到speaking）：<speaking>我将执行<OpenExe>打开记事本</speaking><action> </action>
+❌ 错误3（缺少标签、顺序颠倒）
+❌ 错误4（action留空不写空格）：<action></action>
+
+# 可用操作指令列表，仅在需要操作电脑时在action标签内使用，不需要操作时action只写空格
 文件操作:
 - <ReadFile 路径>C:\\test.txt</ReadFile>
 - <ReadFolder 路径>C:\\Users</ReadFolder>
@@ -72,6 +102,11 @@ SYSTEM_PROMPT = """你是 ApexAgent，一个运行在桌面上的 AI 智能体�
 - <while API名称 次数>ReadFile 3</while>
 - <for(次数,数组) API名称>for(3,C:\\a.txt C:\\b.txt C:\\c.txt) ReadFile</for>
 - <If condition="">condition</If>
+
+重要约束：
+1. 不允许输出任何思考过程、内部推理草稿。直接输出最终的标签结果。
+2. 禁止解释你要做什么，speaking只给用户自然对话。
+3. 严格区分对话文本和操作指令，严禁交叉混用。
 """
 
 def _wrap_user_msg(user_msg: str, is_first: bool = False) -> str:
@@ -79,7 +114,6 @@ def _wrap_user_msg(user_msg: str, is_first: bool = False) -> str:
     if is_first:
         return (
             "【请严格按照以下标签格式回复，不要输出任何标签之外的文字：\n"
-            "<thinking>你的思考过程</thinking>\n"
             "<speaking>你对用户说的话</speaking>\n"
             "<action>指令或空格</action>】\n\n"
             + user_msg
@@ -98,8 +132,6 @@ _MAX_TAG_LEN = 12
 
 #  标签 → 目标状态 映射
 _TAG_MAP = {
-    "<thinking>":  "thinking",
-    "</thinking>": "idle",
     "<speaking>":  "speaking",
     "</speaking>": "idle",
     "<action>":    "action",
@@ -108,13 +140,12 @@ _TAG_MAP = {
 
 
 class StreamParser:
-    """逐字符流式标签解析器"""
+    """逐字符流式标签解析器（仅解析 speaking/action，thinking 由 Ollama 原生分离）"""
 
     def __init__(self):
         self._state = "idle"
         self._buf = ""
-        self._full = {"thinking": "", "speaking": "", "action": ""}
-        # idle 中的非标签内容：模型不输出标签时，全部当 speaking 回退
+        self._full = {"speaking": "", "action": ""}
         self._idle_fallback = ""
 
     def feed(self, text: str) -> list:
@@ -123,7 +154,6 @@ class StreamParser:
         for ch in text:
             self._buf += ch
             if len(self._buf) > _MAX_TAG_LEN:
-                # 溢出部分一定不是标签的一部分（最长标签 11 字符），先发送
                 overflow = self._buf[:-_MAX_TAG_LEN]
                 if overflow:
                     if self._state != "idle":
@@ -134,18 +164,15 @@ class StreamParser:
                         events.append(("speaking", overflow))
                 self._buf = self._buf[-_MAX_TAG_LEN:]
 
-            # idle 状态：检查所有开始标签；非 idle：只检查当前状态的结束标签
             check_tags = (
-                ["<thinking>", "<speaking>", "<action>"]
+                ["<speaking>", "<action>"]
                 if self._state == "idle"
                 else [f"</{self._state}>"]
             )
 
-            # 检查 buffer 末尾是否命中完整标签
             tag_matched = False
             for tag in check_tags:
                 if self._buf.endswith(tag):
-                    # 标签前的残留字符（例：idle 时 \n\n<th...中的 \n\n）
                     prefix = self._buf[:-len(tag)]
                     if prefix and self._state == "idle":
                         self._idle_fallback += prefix
@@ -160,9 +187,8 @@ class StreamParser:
             if tag_matched:
                 continue
 
-            # 未命中 → 检查 buffer 是否可能是某标签前缀
             candidates = (
-                ["<thinking>", "<speaking>", "<action>"]
+                ["<speaking>", "<action>"]
                 if self._state == "idle"
                 else [f"</{self._state}>"]
             )
@@ -173,12 +199,10 @@ class StreamParser:
             if could_be_tag:
                 continue
 
-            # buffer 不是标签前缀 → 路由到对应通道
             if self._state != "idle":
                 self._full[self._state] += self._buf
                 events.append((self._state, self._buf))
             else:
-                # idle 中的非标签字符：回退为 speaking 并实时发出
                 self._idle_fallback += self._buf
                 events.append(("speaking", self._buf))
             self._buf = ""
@@ -188,12 +212,10 @@ class StreamParser:
     def get_results(self) -> dict:
         """获取最终解析结果"""
         speaking = self._full.get("speaking", "")
-        # idle 回退 + 残留 buffer
         fallback = self._idle_fallback + self._buf
         if fallback:
             speaking += fallback
         return {
-            "thinking": self._full.get("thinking", "").strip(),
             "speaking": speaking.strip(),
             "action": self._full.get("action", "").strip(),
         }
@@ -260,11 +282,19 @@ class LLMClient:
             yield {"type": "error", "error": "未填写 Ollama 模型名称，请在设置中填写"}
             return
 
+        _debug_log(f"=== Ollama 开始 === model={model}")
+        last_user = ""
+        for m in reversed(full_messages):
+            if m.get("role") == "user":
+                last_user = m.get("content", "")[:200]
+                break
+        _debug_log(f"最后用户消息: {last_user}")
+
         payload = {
             "model": model,
             "messages": full_messages,
             "stream": True,
-            "options": {"temperature": 0.7, "num_predict": 4096},
+            "options": {"temperature": 0.7, "num_predict": 4096, "think": True},
         }
         try:
             resp = requests.post(
@@ -273,6 +303,8 @@ class LLMClient:
             )
             resp.raise_for_status()
 
+            all_thinking = ""
+            all_content = ""
             parser = StreamParser()
             for line in resp.iter_lines(decode_unicode=True):
                 if not line:
@@ -283,25 +315,39 @@ class LLMClient:
                     continue
                 if obj.get("done"):
                     break
-                content = obj.get("message", {}).get("content", "")
-                if content:
-                    for evt_type, evt_text in parser.feed(content):
+                # Ollama 原生 think:true 分离：thinking → 直接推送，content → 解析 speaking/action
+                msg = obj.get("message", {})
+                think_text = msg.get("thinking", "")
+                if think_text:
+                    all_thinking += think_text
+                    yield {"type": "thinking", "content": think_text}
+                cont_text = msg.get("content", "")
+                if cont_text:
+                    all_content += cont_text
+                    for evt_type, evt_text in parser.feed(cont_text):
                         yield {"type": evt_type, "content": evt_text}
 
-            # 结束
+            _debug_log(f"原生thinking({len(all_thinking)}字符): {all_thinking[:500]}")
+            _debug_log(f"原始content({len(all_content)}字符): {all_content[:500]}")
+
             results = parser.get_results()
+            _debug_log(f"解析结果: speaking={len(results['speaking'])} action={len(results['action'])}")
+            _debug_log(f"=== Ollama 完成 ===")
             yield {
                 "type": "done",
-                "thinking": results["thinking"],
+                "thinking": all_thinking.strip(),
                 "speaking": results["speaking"],
                 "action": results["action"],
                 "error": None,
             }
         except requests.exceptions.ConnectionError:
+            _debug_log("错误: 无法连接 Ollama")
             yield {"type": "error", "error": "无法连接 Ollama，请确认服务已启动"}
         except requests.exceptions.Timeout:
+            _debug_log("错误: Ollama 请求超时")
             yield {"type": "error", "error": "Ollama 请求超时"}
         except Exception as e:
+            _debug_log(f"错误: Ollama 异常: {e}")
             yield {"type": "error", "error": f"Ollama 异常: {e}"}
 
     # -------- OpenAI 流式 -------
@@ -316,6 +362,8 @@ class LLMClient:
         if not model:
             yield {"type": "error", "error": "未填写 OpenAI 模型名称，请在设置中填写"}
             return
+
+        _debug_log(f"=== OpenAI 开始 === model={model}")
 
         payload = {
             "model": model,
@@ -336,6 +384,7 @@ class LLMClient:
             )
             resp.raise_for_status()
 
+            all_raw = ""
             parser = StreamParser()
             for line in resp.iter_lines(decode_unicode=True):
                 if not line or not line.startswith("data: "):
@@ -350,23 +399,31 @@ class LLMClient:
                 delta = obj.get("choices", [{}])[0].get("delta", {})
                 content = delta.get("content", "")
                 if content:
+                    all_raw += content
                     for evt_type, evt_text in parser.feed(content):
                         yield {"type": evt_type, "content": evt_text}
 
+            _debug_log(f"原始输出({len(all_raw)}字符): {all_raw[:2000]}")
+
             results = parser.get_results()
+            _debug_log(f"解析结果: speaking={len(results['speaking'])} action={len(results['action'])}")
+            _debug_log(f"=== OpenAI 完成 ===")
             yield {
                 "type": "done",
-                "thinking": results["thinking"],
+                "thinking": "",
                 "speaking": results["speaking"],
                 "action": results["action"],
                 "error": None,
             }
         except requests.exceptions.HTTPError as e:
+            _debug_log(f"错误: API 请求失败 ({resp.status_code})")
             yield {"type": "error",
                    "error": f"API 请求失败 ({resp.status_code}): {resp.text[:200]}"}
         except requests.exceptions.ConnectionError:
+            _debug_log(f"错误: 无法连接 OpenAI API")
             yield {"type": "error", "error": f"无法连接 API 地址: {base_url}"}
         except Exception as e:
+            _debug_log(f"错误: OpenAI API 异常: {e}")
             yield {"type": "error", "error": f"API 异常: {e}"}
 
     # -------- 公共方法 -------

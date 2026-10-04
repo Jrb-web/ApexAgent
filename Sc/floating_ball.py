@@ -753,6 +753,11 @@ class PanelWindow(QWidget):
         self._chunk_queue = queue.Queue()
         self._poll_timer = QTimer()
         self._poll_timer.timeout.connect(self._drain_queue)
+        # Typewriter 打字机动画：待揭示字符缓冲 + 逐字渲染定时器
+        self._tw_pending_thinking = ""
+        self._tw_pending_speaking = ""
+        self._tw_timer = QTimer()
+        self._tw_timer.timeout.connect(self._typewriter_tick)
         self._init_ui()
         self._build_content()
         self._restore_conversation()
@@ -1038,6 +1043,9 @@ class PanelWindow(QWidget):
 
         # 重置队列状态（线程安全）
         self._chunk_queue = queue.Queue()
+        # 重置 Typewriter 缓冲区
+        self._tw_pending_thinking = ""
+        self._tw_pending_speaking = ""
 
         # 启动轮询定时器
         self._poll_timer.start(self._STREAM_POLL_MS)
@@ -1059,7 +1067,7 @@ class PanelWindow(QWidget):
         self._chunk_queue.put(("done", result))
 
     def _drain_queue(self):
-        """主线程定时器：每次只取 1 条 chunk，立刻 repaint 渲染到屏幕"""
+        """主线程定时器：从队列取 chunk，推入 Typewriter 缓冲区"""
         try:
             item = self._chunk_queue.get_nowait()
             kind = item[0]
@@ -1069,18 +1077,19 @@ class PanelWindow(QWidget):
                     if hasattr(self, "_thinking_bubble") and self._thinking_bubble:
                         cur = self._thinking_bubble.text()
                         if cur.startswith("⏳"):
-                            cur = ""
-                        self._thinking_bubble.setText(cur + text)
-                        self._thinking_bubble.repaint()
+                            self._thinking_bubble.setText("")
+                        self._tw_pending_thinking += text
                 elif chunk_type == "speaking":
                     if hasattr(self, "_speaking_bubble") and self._speaking_bubble:
                         cur = self._speaking_bubble.text()
                         if cur.startswith("⏳"):
-                            cur = ""
-                        self._speaking_bubble.setText(cur + text)
-                        self._speaking_bubble.repaint()
+                            self._speaking_bubble.setText("")
+                        self._tw_pending_speaking += text
                 elif chunk_type == "action":
                     self._drain_action_chunk(text)
+                # 启动打字机
+                if (self._tw_pending_thinking or self._tw_pending_speaking) and not self._tw_timer.isActive():
+                    self._tw_timer.start(25)
             elif kind == "done":
                 self._drain_done(item[1])
                 return
@@ -1098,17 +1107,53 @@ class PanelWindow(QWidget):
             self._msg_layout.addStretch()
         # 骨架屏自动以 shimmer 动画运行，不需额外更新
 
+    def _typewriter_tick(self):
+        """打字机定时器：每 25ms 从待揭示缓冲区取出 2 字符逐字渲染"""
+        any_revealed = False
+        if self._tw_pending_thinking:
+            chunk = self._tw_pending_thinking[:2]
+            self._tw_pending_thinking = self._tw_pending_thinking[2:]
+            if hasattr(self, "_thinking_bubble") and self._thinking_bubble:
+                self._thinking_bubble.setText(self._thinking_bubble.text() + chunk)
+                self._thinking_bubble.repaint()
+            any_revealed = True
+        if self._tw_pending_speaking:
+            chunk = self._tw_pending_speaking[:2]
+            self._tw_pending_speaking = self._tw_pending_speaking[2:]
+            if hasattr(self, "_speaking_bubble") and self._speaking_bubble:
+                self._speaking_bubble.setText(self._speaking_bubble.text() + chunk)
+                self._speaking_bubble.repaint()
+            any_revealed = True
+        if not any_revealed:
+            self._tw_timer.stop()
+        self._scroll_to_bottom()
+
+    def _typewriter_flush(self):
+        """立即展现所有剩余 Typewriter 缓冲字符（Agent 完成时调用）"""
+        self._tw_timer.stop()
+        if self._tw_pending_thinking:
+            if hasattr(self, "_thinking_bubble") and self._thinking_bubble:
+                self._thinking_bubble.setText(self._thinking_bubble.text() + self._tw_pending_thinking)
+                self._thinking_bubble.repaint()
+            self._tw_pending_thinking = ""
+        if self._tw_pending_speaking:
+            if hasattr(self, "_speaking_bubble") and self._speaking_bubble:
+                self._speaking_bubble.setText(self._speaking_bubble.text() + self._tw_pending_speaking)
+                self._speaking_bubble.repaint()
+            self._tw_pending_speaking = ""
+
     def _drain_done(self, result: dict):
-        """Agent 完成：停止轮询，闭合 action 卡片"""
+        """Agent 完成：停止轮询，闭合 action 卡片，刷新打字机"""
         self._poll_timer.stop()
         self._chunk_queue = queue.Queue()
+        # 立即展现所有剩余 Typrewriter 缓冲字符
+        self._typewriter_flush()
         action_content = result.get("action", "") or self._action_buffer.strip()
         if action_content and hasattr(self, "_action_card") and self._action_card:
             cmds = _parse_action_card_info(action_content)
             if cmds:
                 self._action_card.set_commands(cmds)
             else:
-                # 无有效命令 → 移除卡片
                 self._msg_layout.removeWidget(self._action_card)
                 self._action_card.deleteLater()
                 self._action_card = None
@@ -1202,6 +1247,8 @@ class PanelWindow(QWidget):
         self._thinking_bubble = None
         self._speaking_bubble = None
         self._action_card = None
+        self._tw_pending_thinking = ""
+        self._tw_pending_speaking = ""
 
     def _ensure_conversation(self):
         if not self._conv_id:
