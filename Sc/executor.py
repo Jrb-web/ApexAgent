@@ -261,9 +261,17 @@ class ActionExecutor:
             if sys.platform.startswith('win32'):
                 os.startfile(path)
             elif sys.platform.startswith('darwin'):
-                subprocess.run(["open", path], check=True)
+                # 优先使用 open -a "AppName" 直接启动应用（避免弹出文件选择窗口）
+                app_name = os.path.basename(path)
+                if app_name.endswith('.app'):
+                    app_name = app_name[:-4]
+                try:
+                    subprocess.run(["open", "-a", app_name], check=True, timeout=10)
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    # 回退：直接 open 路径
+                    subprocess.run(["open", path], check=True, timeout=10)
             else:
-                subprocess.run(["xdg-open", path], check=True)
+                subprocess.run(["xdg-open", path], check=True, timeout=10)
             return f"已启动程序: {path}"
         except Exception as e:
             return f"启动程序失败: {str(e)}"

@@ -5,6 +5,7 @@ ApexAgent 悬浮球 + 弹出面板
 
 import sys
 import os
+import re
 import json
 import queue
 import platform
@@ -524,6 +525,22 @@ class HistoryDialog(QDialog):
         ConfigManager.set_current_conversation(conv["id"])
         self.conversation_selected.emit(conv["id"])
         self.accept()
+
+
+_THINKING_TAG_RE = re.compile(
+    r'<(/?)(speaking|action|thinking|step|plan|OpenExe|ReadFile|ReadFolder|'
+    r'SearchFile|RemoveFile|ReadRunning|KillProcess|GetSystemInfo|GetDiskUsage|'
+    r'GetProcessList|GetNetworkStatus|GetActiveWindow|CloseWindow|ResizeWindow|'
+    r'FocusWindow|Screenshot|MouseMove|MouseClick|ClipboardRead|ClipboardWrite|'
+    r'RegistryRead|RegistryWrite|ServiceControl|Shutdown|NameChange|DiffJsonFile|'
+    r'RunCommand|GetDesktopFiles|while|for|If)\b[^>]*>',
+    re.IGNORECASE,
+)
+
+
+def _filter_thinking_tags(text: str) -> str:
+    """把思考中的XML标签替换为小框框 [命令]"""
+    return _THINKING_TAG_RE.sub('·', text)
 
 
 class CollapsibleThinkingBubble(QWidget):
@@ -1391,6 +1408,7 @@ class PanelWindow(QWidget):
             cur = self._active_card.text()
             if cur.startswith("⏳"):
                 self._active_card.setText("")
+            text = _filter_thinking_tags(text)
         elif isinstance(self._active_card, GlowBorderBubble):
             cur = self._active_card.text()
             if cur.startswith("⏳"):
@@ -1485,20 +1503,24 @@ class PanelWindow(QWidget):
         self._poll_timer.stop()
         self._chunk_queue = queue.Queue()
         self._typewriter_flush()
-        # 闭合 action 卡片
-        action_content = result.get("action", "") or self._action_buffer.strip()
+        # 闭合当前激活的 action 卡片（如果有缓冲内容）
+        action_content = self._action_buffer.strip()
         if action_content and isinstance(self._active_card, ActionCard):
             cmds = _parse_action_card_info(action_content)
             if cmds:
                 self._active_card.set_commands(cmds)
-            else:
-                self._msg_layout.removeWidget(self._active_card)
+            elif not self._active_card._commands:
+                self._active_card.hide()
                 self._active_card.deleteLater()
-                self._active_card = None
-        elif isinstance(self._active_card, ActionCard) and not self._action_buffer.strip():
-            self._msg_layout.removeWidget(self._active_card)
-            self._active_card.deleteLater()
-            self._active_card = None
+                if self._active_card in self._step_cards:
+                    self._step_cards.remove(self._active_card)
+        elif isinstance(self._active_card, ActionCard):
+            # action卡片已无缓冲 → 如果还没有命令内容，就删除空壳
+            if not getattr(self._active_card, '_commands', None):
+                self._active_card.hide()
+                self._active_card.deleteLater()
+                if self._active_card in self._step_cards:
+                    self._step_cards.remove(self._active_card)
         self._action_buffer = ""
         self._active_card = None
         self._on_agent_complete(result)
@@ -1518,14 +1540,25 @@ class PanelWindow(QWidget):
         speaking = result.get("speaking", "")
         error = result.get("error", "")
 
-        # 清理无内容的占位思考卡片
+        # 清理无内容的占位卡片（所有类型）
+        to_remove = []
         for card in list(self._step_cards):
             if isinstance(card, CollapsibleThinkingBubble):
                 t = card.text()
                 if not t or t.startswith("⏳"):
-                    self._step_cards.remove(card)
-                    card.hide()
-                    card.deleteLater()
+                    to_remove.append(card)
+            elif isinstance(card, GlowBorderBubble):
+                t = card.text()
+                if not t or t.startswith("⏳"):
+                    to_remove.append(card)
+            elif isinstance(card, ActionCard):
+                if not card._commands:
+                    to_remove.append(card)
+        for card in to_remove:
+            if card in self._step_cards:
+                self._step_cards.remove(card)
+            card.hide()
+            card.deleteLater()
 
         # 错误提示 — 在最后一个 speaking 卡片上追加
         if error:
@@ -1557,6 +1590,12 @@ class PanelWindow(QWidget):
                 if t and not t.startswith("⏳"):
                     thinking_text += t + "\n"
 
+        # 收集所有 action 块用于保存
+        action_blocks = []
+        for blk in result.get("blocks", []):
+            if blk.get("type") == "action" and blk.get("content", "").strip():
+                action_blocks.append(blk["content"].strip())
+
         conv = ConversationStore.load(self._conv_id)
         if conv:
             conv["messages"].append({
@@ -1564,6 +1603,7 @@ class PanelWindow(QWidget):
                 "content": final_text,
                 "thinking": thinking_text.strip() if thinking_text else thinking.strip() if thinking else "",
                 "action": result.get("action", ""),
+                "action_blocks": action_blocks,
                 "timestamp": datetime.now().isoformat()
             })
             agent_messages = result.get("messages", [])
@@ -1612,8 +1652,12 @@ class PanelWindow(QWidget):
                         # 再重建 speaking
                         if content:
                             self._add_message(content, is_user=False)
-                        # 重建 action 卡片
-                        if action_xml:
+                        # 重建 action 卡片：优先用 action_blocks (多块)
+                        action_blocks = msg.get("action_blocks", [])
+                        if action_blocks:
+                            for ab in action_blocks:
+                                self._restore_action_card(ab)
+                        elif action_xml:
                             self._restore_action_card(action_xml)
 
     def _restore_thinking_bubble(self, thinking_text):
@@ -1680,7 +1724,11 @@ class PanelWindow(QWidget):
                         self._restore_thinking_bubble(thinking)
                     if content:
                         self._add_message(content, is_user=False)
-                    if action_xml:
+                    action_blocks = msg.get("action_blocks", [])
+                    if action_blocks:
+                        for ab in action_blocks:
+                            self._restore_action_card(ab)
+                    elif action_xml:
                         self._restore_action_card(action_xml)
 
     def _clear_messages(self):
