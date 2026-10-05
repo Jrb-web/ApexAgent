@@ -1287,6 +1287,12 @@ class PanelWindow(QWidget):
         self._step_cards = []
         self._action_buffer = ""
 
+        # 立即可见：创建思考占位卡片（微光骨架屏）
+        placeholder = self._create_step_card("thinking")
+        placeholder.setCollapsed(True)
+        self._active_card = placeholder
+        self._tw_card = placeholder
+
         # 重置 Agent 停止标志
         self._agent.reset_stop()
 
@@ -1511,6 +1517,15 @@ class PanelWindow(QWidget):
         thinking = result.get("thinking", "")
         speaking = result.get("speaking", "")
         error = result.get("error", "")
+
+        # 清理无内容的占位思考卡片
+        for card in list(self._step_cards):
+            if isinstance(card, CollapsibleThinkingBubble):
+                t = card.text()
+                if not t or t.startswith("⏳"):
+                    self._step_cards.remove(card)
+                    card.hide()
+                    card.deleteLater()
 
         # 错误提示 — 在最后一个 speaking 卡片上追加
         if error:
