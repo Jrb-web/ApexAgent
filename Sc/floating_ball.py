@@ -309,7 +309,8 @@ class ChatInput(QTextEdit):
             if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
                 self.insertPlainText("\n")
             else:
-                self.send_signal.emit()
+                # 延迟 emit 避免 pyqt6 keyPressEvent 内直接 emit 的 GC 崩溃
+                QTimer.singleShot(0, self.send_signal.emit)
         else:
             super().keyPressEvent(event)
 
