@@ -1157,6 +1157,7 @@ class PanelWindow(QWidget):
         self._planning_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._planning_label.setWordWrap(True)
         self._planning_label.hide()
+        self._planning_shown_at = 0.0
         self._planning_shimmer = 0.0
         self._planning_timer = QTimer()
         self._planning_timer.timeout.connect(self._planning_shimmer_tick)
@@ -1442,7 +1443,6 @@ class PanelWindow(QWidget):
             if kind == "chunk":
                 _, chunk_type, text = item
                 if chunk_type == "block_start":
-                    self._hide_planning()
                     self._on_block_start(text)
                 elif chunk_type == "thinking":
                     self._on_step_chunk("thinking", text)
@@ -1470,6 +1470,8 @@ class PanelWindow(QWidget):
                 self._active_card.set_commands(cmds)
         self._active_card = None
         self._action_buffer = ""
+        # 延迟隐藏规划（_hide_planning 已内置最小显示时间）
+        self._hide_planning()
 
     def _on_step_chunk(self, chunk_type: str, text: str):
         """thinking/speaking 流式块 → 并入打字机"""
@@ -1696,10 +1698,23 @@ class PanelWindow(QWidget):
         self._tw_card = None
         self._action_buffer = ""
 
+    def _do_hide_planning(self):
+        """真正隐藏规划标签"""
+        try:
+            self._planning_timer.stop()
+            self._planning_label.hide()
+        except RuntimeError:
+            pass
+
     def _show_planning(self):
         """显示'正在规划下一步'微光提示"""
+        import time
         try:
+            # 取消之前的延迟隐藏
+            if hasattr(self, '_planning_hide_timer'):
+                self._planning_hide_timer.stop()
             self._planning_label.show()
+            self._planning_shown_at = time.time()
             self._planning_shimmer = 0.0
             if not self._planning_timer.isActive():
                 self._planning_timer.start(40)
@@ -1707,10 +1722,20 @@ class PanelWindow(QWidget):
             pass
 
     def _hide_planning(self):
-        """隐藏规划提示"""
+        """隐藏规划提示（延迟执行，保证至少可见 1 秒）"""
+        import time
         try:
-            self._planning_timer.stop()
-            self._planning_label.hide()
+            elapsed = time.time() - self._planning_shown_at if self._planning_shown_at else 99
+            if elapsed < 1.2:
+                remaining_ms = int((1.2 - elapsed) * 1000)
+                if not hasattr(self, '_planning_hide_timer'):
+                    self._planning_hide_timer = QTimer()
+                    self._planning_hide_timer.setSingleShot(True)
+                    self._planning_hide_timer.timeout.connect(self._do_hide_planning)
+                self._planning_hide_timer.stop()
+                self._planning_hide_timer.start(remaining_ms)
+            else:
+                self._do_hide_planning()
         except RuntimeError:
             pass
 

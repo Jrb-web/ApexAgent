@@ -220,10 +220,14 @@ class ApexAgent:
                     messages.append({"role": "user", "content": result_text})
 
             # 保存本轮 assistant 回复，继续循环让 LLM 看到结果后决策下一步
-            assistant_content = speaking or thinking or ""
+            # 用本轮所有 speaking block 拼接（不用 chunk_data["speaking"]，那是第一个）
+            assistant_content = "\n".join(
+                b["content"] for b in blocks if b["type"] == "speaking" and b["content"].strip()
+            ) or thinking or ""
             if assistant_content.strip():
                 messages.append({"role": "assistant", "content": assistant_content})
 
+            print(f"[agent] 轮次{iteration+1} 完成，已执行 {len(seen_actions)} 条指令，继续下一轮推理...")
             # continue → 下一轮 LLM 调用，messages 含执行结果
 
         return {"thinking": all_thinking,
