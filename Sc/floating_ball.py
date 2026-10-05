@@ -6,6 +6,15 @@ ApexAgent 悬浮球 + 弹出面板
 import sys
 import os
 import re
+_SPEAKING_TAG_RE = re.compile(r'</?[a-zA-Z][^>]*/?>')
+
+def _clean_speaking(text: str) -> str:
+    """清洗 speaking 文本：去掉所有尖括号标签（如残留的 </action></speaking>）"""
+    if not text:
+        return text
+    cleaned = _SPEAKING_TAG_RE.sub('', text)
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    return cleaned.strip()
 import json
 import queue
 import platform
@@ -1682,7 +1691,7 @@ class PanelWindow(QWidget):
                     break
 
         # 保存到对话
-        final_text = speaking.strip() if speaking else (error or "任务已完成。")
+        final_text = _clean_speaking(speaking.strip() if speaking else (error or "任务已完成。"))
         thinking_text = ""
         for card in self._step_cards:
             if isinstance(card, CollapsibleThinkingBubble):

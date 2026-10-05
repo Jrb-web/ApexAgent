@@ -9,6 +9,19 @@ import xml.etree.ElementTree as ET
 from .llm import LLMClient
 from .executor import ActionExecutor, _xml_escape_attrs
 
+# 正则：匹配 XML/HTML 尖括号标签，用于清洗 speaking 中的残留标签
+_SPEAKING_TAG_RE = re.compile(r'</?[a-zA-Z][^>]*/?>')
+
+
+def _clean_speaking(text: str) -> str:
+    """清洗 speaking 文本：去掉所有尖括号标签（如残留的 </action></speaking>）"""
+    if not text:
+        return text
+    cleaned = _SPEAKING_TAG_RE.sub('', text)
+    # 去掉标签残留产生的多余空行
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    return cleaned.strip()
+
 
 MAX_ITERATIONS = 8
 
@@ -85,7 +98,7 @@ class ApexAgent:
 
         for iteration in range(MAX_ITERATIONS):
             if self._stop_event.is_set():
-                speaking_parts = [b["content"] for b in all_blocks if b["type"] == "speaking" and b["content"].strip()]
+                speaking_parts = [_clean_speaking(b["content"]) for b in all_blocks if b["type"] == "speaking" and b["content"].strip()]
                 return {"thinking": all_thinking,
                         "speaking": "\n".join(speaking_parts) or "用户手动停止",
                         "success": False, "error": "用户手动停止",
@@ -158,22 +171,37 @@ class ApexAgent:
             if action:
                 last_action = action
 
-            # 累积本轮的 blocks
+            # 累积本轮的 blocks（清洗 speaking 中的 XML 标签残留）
             for b in blocks:
-                all_blocks.append(dict(b))
+                bb = dict(b)
+                if bb["type"] == "speaking":
+                    bb["content"] = _clean_speaking(bb["content"])
+                all_blocks.append(bb)
 
             # 如果没有 action 相关块 → 任务结束
             has_action = any(b["type"] == "action" and b["content"].strip() for b in blocks)
             if not has_action:
-                # 从所有 speaking block 拼出最终文本，去重：相同内容只取一次
-                seen = set()
-                speaking_parts = []
+                # 从所有 speaking block 拼出最终文本
+                # 去重：A包含B或B包含A → 保留较长的
+                raw_parts = []
                 for b in all_blocks:
                     if b["type"] == "speaking" and b["content"].strip():
-                        c = b["content"].strip()
-                        if c not in seen:
-                            seen.add(c)
-                            speaking_parts.append(c)
+                        raw_parts.append(_clean_speaking(b["content"]))
+                speaking_parts = []
+                for p in raw_parts:
+                    if not p:
+                        continue
+                    duplicate = False
+                    for i, existing in enumerate(speaking_parts):
+                        if p in existing:
+                            duplicate = True
+                            break
+                        if existing in p:
+                            speaking_parts[i] = p
+                            duplicate = True
+                            break
+                    if not duplicate:
+                        speaking_parts.append(p)
                 all_speaking = "\n".join(speaking_parts)
                 messages.append({"role": "assistant",
                                  "content": speaking or thinking or "任务已完成。"})
@@ -225,7 +253,7 @@ class ApexAgent:
             # 保存本轮 assistant 回复，继续循环让 LLM 看到结果后决策下一步
             # 用本轮所有 speaking block 拼接（不用 chunk_data["speaking"]，那是第一个）
             assistant_content = "\n".join(
-                b["content"] for b in blocks if b["type"] == "speaking" and b["content"].strip()
+                _clean_speaking(b["content"]) for b in blocks if b["type"] == "speaking" and b["content"].strip()
             ) or thinking or ""
             if assistant_content.strip():
                 messages.append({"role": "assistant", "content": assistant_content})
@@ -234,7 +262,7 @@ class ApexAgent:
             # continue → 下一轮 LLM 调用，messages 含执行结果
 
         return {"thinking": all_thinking,
-                "speaking": "\n".join(b["content"] for b in all_blocks if b["type"] == "speaking" and b["content"].strip()),
+                "speaking": "\n".join(_clean_speaking(b["content"]) for b in all_blocks if b["type"] == "speaking" and b["content"].strip()),
                 "success": False, "error": f"推理轮次超过上限({MAX_ITERATIONS})",
                 "messages": messages, "action": last_action,
                 "exec_result": all_exec_results, "blocks": all_blocks}
