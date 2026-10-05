@@ -29,6 +29,7 @@ class ApexAgent:
     def reset_stop(self):
         """重置停止标志（新对话前调用）"""
         self._stop_event.clear()
+        self._llm.reset_stop()
 
     def run_async(
         self,

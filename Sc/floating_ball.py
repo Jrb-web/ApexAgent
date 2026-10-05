@@ -1524,8 +1524,6 @@ class PanelWindow(QWidget):
             self._tw_buffer = self._tw_buffer[2:]
             if self._tw_card:
                 if isinstance(self._tw_card, CollapsibleThinkingBubble):
-                    if self._tw_card.isCollapsed():
-                        self._tw_card.setCollapsed(False)
                     self._tw_card.appendRaw(chunk)
                 else:
                     self._tw_card.setText(self._tw_card.text() + chunk)
@@ -1539,8 +1537,6 @@ class PanelWindow(QWidget):
         self._tw_timer.stop()
         if self._tw_buffer and self._tw_card:
             if isinstance(self._tw_card, CollapsibleThinkingBubble):
-                if self._tw_card.isCollapsed():
-                    self._tw_card.setCollapsed(False)
                 self._tw_card.appendRaw(self._tw_buffer)
             else:
                 self._tw_card.setText(self._tw_card.text() + self._tw_buffer)
