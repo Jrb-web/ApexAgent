@@ -190,6 +190,9 @@ class ApexAgent:
                     if act in seen_actions:
                         continue
                     seen_actions.add(act)
+                    if self._stop_event.is_set():
+                        # 用户已停止 → 不再执行新指令
+                        continue
                     print(f"[agent] 轮次{iteration+1} 第{bi+1}条action: {repr(act[:200])}")
                     if not self._is_valid_action(act):
                         if on_chunk:

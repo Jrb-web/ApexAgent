@@ -1401,30 +1401,49 @@ class PanelWindow(QWidget):
             return
         self._agent.stop()
         self._hide_planning()
-        self._poll_timer.stop()
-        self._chunk_queue = queue.Queue()
         self._typewriter_flush()
-        # 闭合 action 卡片
+        # 闭合当前正在接收的 action 卡片
         action_buf = self._action_buffer.strip()
-        exec_result = None
         if action_buf and self._active_card and isinstance(self._active_card, ActionCard):
             cmds = _parse_action_card_info(action_buf)
             if cmds:
                 self._active_card.set_commands(cmds)
-                exec_result = {"success": False, "results": [{"output": "⏹ 用户手动停止"}], "error": "用户手动停止"}
             else:
                 self._msg_layout.removeWidget(self._active_card)
                 self._active_card.deleteLater()
                 self._active_card = None
         self._action_buffer = ""
+        # 不 wipe queue、不停 timer、不调 _on_agent_complete
+        # 等 Agent 子线程返回真实结果，由 _on_drain_done 处理
+        # 安全回退：5 秒超时后强制完成
+        QTimer.singleShot(5000, self._on_stop_timeout)
+
+    def _on_stop_timeout(self):
+        """停止超时回退：Agent 未在 5 秒内返回，强制完成"""
+        if not self._is_processing:
+            return
+        self._poll_timer.stop()
+        self._chunk_queue = queue.Queue()
+        # 收集已有的步骤卡片信息
+        thinking_text = ""
+        action_blocks = []
+        for card in self._step_cards:
+            if isinstance(card, CollapsibleThinkingBubble):
+                t = card.text()
+                if t and not t.startswith("⏳"):
+                    thinking_text += t + "\n"
+            elif isinstance(card, ActionCard):
+                for cmd in card._commands:
+                    action_blocks.append(cmd)
         self._on_agent_complete({
-            "thinking": "",
+            "thinking": thinking_text,
             "speaking": "",
             "success": False,
-            "error": "用户手动停止",
+            "error": "用户手动停止（超时）",
             "messages": [],
-            "action": action_buf,
-            "exec_result": [exec_result] if exec_result else [],
+            "action": "",
+            "exec_result": [],
+            "blocks": [{"type": "action", "content": a} for a in action_blocks],
         })
 
     def _push_chunk(self, chunk_type: str, text: str):
@@ -1581,6 +1600,9 @@ class PanelWindow(QWidget):
         self._chunk_queue = queue.Queue()
         self._hide_planning()
         self._typewriter_flush()
+        # 如果已完成（如 stop_timeout 先触发），跳过
+        if not self._is_processing:
+            return
         # 闭合当前激活的 action 卡片（如果有缓冲内容）
         action_content = self._action_buffer.strip()
         if action_content and isinstance(self._active_card, ActionCard):

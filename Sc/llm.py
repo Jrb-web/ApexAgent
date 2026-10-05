@@ -180,6 +180,7 @@ class StreamParser:
         self._current = {"speaking": "", "action": ""}
         self._blocks = []       # [{"type": "speaking"|"action", "content": "..."}, ...]
         self._idle_fallback = ""
+        self._seen_first_tag = False  # 第一个标签后 idle 文本为标签间空白，忽略
 
     def feed(self, text: str) -> list:
         """喂入文本，返回 [(type, text), ...] 事件列表
@@ -194,9 +195,11 @@ class StreamParser:
                     if self._state != "idle":
                         self._current[self._state] += overflow
                         events.append((self._state, overflow))
-                    else:
+                    elif not self._seen_first_tag:
+                        # 第一个标签出现前 → 溢出文本是LLM自然说话
                         self._idle_fallback += overflow
                         events.append(("speaking", overflow))
+                    # 标签之间 → 空白忽略
                 self._buf = self._buf[-_MAX_TAG_LEN:]
 
             check_tags = (
@@ -209,7 +212,7 @@ class StreamParser:
             for tag in check_tags:
                 if self._buf.endswith(tag):
                     prefix = self._buf[:-len(tag)]
-                    if prefix and self._state == "idle":
+                    if prefix and self._state == "idle" and not self._seen_first_tag:
                         self._idle_fallback += prefix
                     self._buf = ""
 
@@ -223,14 +226,17 @@ class StreamParser:
                     else:
                         # 开启标签
                         new_state = tag[1:-1]
-                        if self._state == "idle" and self._idle_fallback.strip():
-                            if new_state == "speaking":
-                                # LLM在<speaking>前说了话 → 合并到speaking内容，避免重复
-                                self._current["speaking"] = self._idle_fallback.strip()
-                            else:
-                                # LLM在<action>前说了话 → 保留为独立speaking块
-                                self._blocks.append({"type": "speaking", "content": self._idle_fallback.strip()})
+                        if self._state == "idle":
+                            fb = self._idle_fallback.strip()
+                            if fb:
+                                if new_state == "speaking":
+                                    # LLM在<speaking>前说了话 → 合并到speaking内容，避免重复
+                                    self._current["speaking"] = fb
+                                else:
+                                    # LLM在<action>前说了话 → 保留为独立speaking块
+                                    self._blocks.append({"type": "speaking", "content": fb})
                             self._idle_fallback = ""
+                        self._seen_first_tag = True
                         self._state = new_state
                         events.append(("block_start", self._state))
                     tag_matched = True
@@ -254,9 +260,11 @@ class StreamParser:
             if self._state != "idle":
                 self._current[self._state] += self._buf
                 events.append((self._state, self._buf))
-            else:
+            elif not self._seen_first_tag:
+                # 第一个标签前 → 可能是LLM自然说话
                 self._idle_fallback += self._buf
                 events.append(("speaking", self._buf))
+            # 标签之间 → 空行/空白忽略
             self._buf = ""
 
         return events
