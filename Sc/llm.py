@@ -163,9 +163,12 @@ def _wrap_user_msg(user_msg: str, is_first: bool = False) -> str:
     """包装用户消息。仅首次用户消息添加格式指令，执行结果等后续消息不包装。"""
     if is_first:
         return (
-            "【请严格按照以下标签格式回复，不要输出任何标签之外的文字：\n"
-            "<speaking>你对用户说的话</speaking>\n"
-            "<action>指令或空格</action>】\n\n"
+            "【🚨 强制 XML 格式 🚨\n"
+            "你只能输出 <speaking>对话</speaking> <action>指令或空格</action> 交替。\n"
+            "严禁在标签外输出任何文字、Markdown、解释。\n"
+            "🚨 第一轮 speaking 只能说意图（如「我来帮你」），严禁写任何数字/结果！\n"
+            "🚨 收到 [系统通知] 后才能在 speaking 写真实数据！\n"
+            "🚨 [系统信息] 叫 Darwin 必须用 / 路径！叫 Windows 必须用 \\\\！】\n\n"
             + user_msg
         )
     return user_msg

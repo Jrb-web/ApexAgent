@@ -97,6 +97,7 @@ class ApexAgent:
         last_action = ""        # 最后一轮 action 字符串
 
         for iteration in range(MAX_ITERATIONS):
+            print(f"[agent] ═══ 轮次 {iteration+1}/{MAX_ITERATIONS} 开始 ═══", flush=True)
             if self._stop_event.is_set():
                 speaking_parts = [_clean_speaking(b["content"]) for b in all_blocks if b["type"] == "speaking" and b["content"].strip()]
                 return {"thinking": all_thinking,
@@ -181,6 +182,7 @@ class ApexAgent:
             # 如果没有 action 相关块 → 任务结束
             has_action = any(b["type"] == "action" and b["content"].strip() for b in blocks)
             if not has_action:
+                print(f"[agent] 轮次{iteration+1} 无 action → 任务结束", flush=True)
                 # 从所有 speaking block 拼出最终文本
                 # 去重：A包含B或B包含A → 保留较长的
                 raw_parts = []
@@ -221,7 +223,7 @@ class ApexAgent:
                     if self._stop_event.is_set():
                         # 用户已停止 → 不再执行新指令
                         continue
-                    print(f"[agent] 轮次{iteration+1} 第{bi+1}条action: {repr(act[:200])}")
+                    print(f"[agent] 轮次{iteration+1} 第{bi+1}条action: {repr(act[:200])}", flush=True)
                     if not self._is_valid_action(act):
                         if on_chunk:
                             on_chunk("speaking",
@@ -249,6 +251,7 @@ class ApexAgent:
                         f"[系统通知] 上一条指令已执行完毕，结果：\n{clean_summary}"
                     )
                     messages.append({"role": "user", "content": result_text})
+                    print(f"[agent] 执行结果已注入 messages → LLM 下轮将看到此结果", flush=True)
 
             # 保存本轮 assistant 回复，继续循环让 LLM 看到结果后决策下一步
             # 用本轮所有 speaking block 拼接（不用 chunk_data["speaking"]，那是第一个）
@@ -258,7 +261,7 @@ class ApexAgent:
             if assistant_content.strip():
                 messages.append({"role": "assistant", "content": assistant_content})
 
-            print(f"[agent] 轮次{iteration+1} 完成，已执行 {len(seen_actions)} 条指令，继续下一轮推理...")
+            print(f"[agent] 轮次{iteration+1} 完成，已执行 {len(seen_actions)} 条指令，继续下一轮推理...", flush=True)
             # continue → 下一轮 LLM 调用，messages 含执行结果
 
         return {"thinking": all_thinking,
