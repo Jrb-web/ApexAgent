@@ -1,0 +1,30 @@
+{
+  "id": "5fa73aab4838",
+  "title": "对话 10-05 11:27",
+  "created_at": "2026-10-05T11:27:38.820650",
+  "updated_at": "2026-10-05T11:28:11.333111",
+  "messages": [
+    {
+      "role": "user",
+      "content": "你好！",
+      "timestamp": "2026-10-05T11:27:42.811143"
+    },
+    {
+      "role": "assistant",
+      "content": "你好！我是ApexAgent，有什么可以帮你的？",
+      "thinking": "\n好的，现在用户发来了“你好！”，我需要按照规则生成正确的XML回复。首先，我应该生成一段简短的回应，比如“你好！我是ApexAgent，有什么可以帮你的？”。然后，因为用户没有提出任何操作请求，所以<action>标签里只需要写一个半角空格。确保标签正确，没有使用任何Markdown或其他格式，只输出固定顺序的两个XML标签。\n",
+      "action": "",
+      "timestamp": "2026-10-05T11:28:11.332549"
+    }
+  ],
+  "_agent_context": [
+    {
+      "role": "user",
+      "content": "你好！"
+    },
+    {
+      "role": "assistant",
+      "content": "你好！我是ApexAgent，有什么可以帮你的？"
+    }
+  ]
+}

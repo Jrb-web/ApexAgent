@@ -36,15 +36,17 @@ SYSTEM_PROMPT = """# 角色介绍
 你输出内容必须严格遵守固定XML标签格式，格式规则优先级高于一切。
 
 # 强制输出格式（最高优先级，所有回复必须遵守）
-你的输出只能由固定顺序的两个XML标签组成，不允许标签以外出现任何字符。
-顺序固定：<speaking>内容</speaking> 紧接着 <action>内容</action>
+你的输出由固定顺序的XML标签组成。支持两个标签任意多次顺序排列：
+<speaking>内容</speaking> <action>内容</action> <speaking>内容</speaking> <action>内容</action> ...
 
 规则清单：
 1. <speaking>：放置你对用户说的自然中文对话。禁止为空，禁止写入任何操作指令、XML标签、类XML语法。
-2. <action>：放置电脑操作指令。无需执行操作时，在标签内写一个半角空格，标签绝对不能省略。
-3. 标签只能使用英文尖括号 < >，禁止中文符号。
-4. 禁止输出Markdown、代码块、解释文字、前置说明、后置总结。
-5. <speaking>内部绝对不能出现任何操作指令，所有操作指令只能写在<action>内部。
+2. <action>：放置电脑操作指令。无需执行操作时在标签内写空格，标签绝对不能省略。
+3. 可以多次交替使用 <speaking> 和 <action>，形成顺序步骤流。
+4. 标签只能使用英文尖括号 < >，禁止中文符号。
+5. 禁止输出Markdown、代码块、解释文字、前置说明、后置总结。
+6. <speaking>内部绝对不能出现任何操作指令，所有操作指令只能写在<action>内部。
+7. 最后必须以 <speaking> 或 <action> </action> 结束，确保标签闭合。
 
 ## 【正确示例】
 用户（Windows）：打开记事本
@@ -57,6 +59,15 @@ SYSTEM_PROMPT = """# 角色介绍
 
 用户：你好
 <speaking>你好，我是ApexAgent，有什么可以帮你的？</speaking>
+<action> </action>
+
+## 【顺序步骤示例】
+用户（macOS）：帮我打开浏览器并查看桌面文件
+<speaking>好的，我先打开Safari浏览器。</speaking>
+<action><OpenExe 程序路径>/Applications/Safari.app</OpenExe></action>
+<speaking>浏览器已打开，现在读取桌面文件。</speaking>
+<action><GetDesktopFiles/></action>
+<speaking>桌面文件已读取完毕，以上就是你的桌面内容。</speaking>
 <action> </action>
 
 ## 【错误示例，绝对不能这样输出】
@@ -146,16 +157,19 @@ _TAG_MAP = {
 
 
 class StreamParser:
-    """逐字符流式标签解析器（仅解析 speaking/action，thinking 由 Ollama 原生分离）"""
+    """逐字符流式标签解析器 — 支持顺序块（多个 speaking/action 对）"""
 
     def __init__(self):
         self._state = "idle"
         self._buf = ""
-        self._full = {"speaking": "", "action": ""}
+        self._current = {"speaking": "", "action": ""}
+        self._blocks = []       # [{"type": "speaking"|"action", "content": "..."}, ...]
         self._idle_fallback = ""
 
     def feed(self, text: str) -> list:
-        """喂入文本，返回 [(type, text), ...] 事件列表"""
+        """喂入文本，返回 [(type, text), ...] 事件列表
+        type ∈ {speaking, action, block_start} — block_start 表示新块开始
+        """
         events = []
         for ch in text:
             self._buf += ch
@@ -163,7 +177,7 @@ class StreamParser:
                 overflow = self._buf[:-_MAX_TAG_LEN]
                 if overflow:
                     if self._state != "idle":
-                        self._full[self._state] += overflow
+                        self._current[self._state] += overflow
                         events.append((self._state, overflow))
                     else:
                         self._idle_fallback += overflow
@@ -183,10 +197,22 @@ class StreamParser:
                     if prefix and self._state == "idle":
                         self._idle_fallback += prefix
                     self._buf = ""
-                    self._state = (
-                        "idle" if tag.startswith("</")
-                        else tag[1:-1]
-                    )
+
+                    if tag.startswith("</"):
+                        # 闭合标签：flush 当前块，切换到 idle
+                        block_content = self._current.get(self._state, "").strip()
+                        if block_content:
+                            self._blocks.append({"type": self._state, "content": block_content})
+                        self._current[self._state] = ""
+                        self._state = "idle"
+                    else:
+                        # 开启标签：如果之前有 speaking 残余，先 flush
+                        new_state = tag[1:-1]
+                        if self._state == "idle" and self._idle_fallback.strip():
+                            self._blocks.append({"type": "speaking", "content": self._idle_fallback.strip()})
+                            self._idle_fallback = ""
+                        self._state = new_state
+                        events.append(("block_start", self._state))
                     tag_matched = True
                     break
 
@@ -206,7 +232,7 @@ class StreamParser:
                 continue
 
             if self._state != "idle":
-                self._full[self._state] += self._buf
+                self._current[self._state] += self._buf
                 events.append((self._state, self._buf))
             else:
                 self._idle_fallback += self._buf
@@ -215,16 +241,29 @@ class StreamParser:
 
         return events
 
+    def get_blocks(self) -> list:
+        """获取所有顺序块 [{type, content}, ...]"""
+        blocks = list(self._blocks)
+        # flush 残余
+        for t in ("speaking", "action"):
+            if self._current.get(t, "").strip():
+                blocks.append({"type": t, "content": self._current[t].strip()})
+        fb = self._idle_fallback.strip()
+        if fb:
+            blocks.append({"type": "speaking", "content": fb})
+        return blocks
+
     def get_results(self) -> dict:
-        """获取最终解析结果"""
-        speaking = self._full.get("speaking", "")
-        fallback = self._idle_fallback + self._buf
-        if fallback:
-            speaking += fallback
-        return {
-            "speaking": speaking.strip(),
-            "action": self._full.get("action", "").strip(),
-        }
+        """兼容旧接口：返回第一个 speaking + 第一个 action"""
+        blocks = self.get_blocks()
+        speaking = ""
+        action = ""
+        for b in blocks:
+            if b["type"] == "speaking" and not speaking:
+                speaking = b["content"]
+            if b["type"] == "action" and not action:
+                action = b["content"]
+        return {"speaking": speaking.strip(), "action": action.strip(), "blocks": blocks}
 
     def reset(self):
         self.__init__()
@@ -239,6 +278,15 @@ class LLMClient:
     def __init__(self, config: dict = None):
         self._config = config or AIConfig.load_all()
         self._provider = self._config.get("provider", "ollama")
+        self._stopped = False
+
+    def stop(self):
+        """停止当前流式请求"""
+        self._stopped = True
+
+    def reset_stop(self):
+        """重置停止标志"""
+        self._stopped = False
 
     @staticmethod
     def _requests():
@@ -313,6 +361,8 @@ class LLMClient:
             all_content = ""
             parser = StreamParser()
             for line in resp.iter_lines(decode_unicode=True):
+                if self._stopped:
+                    break
                 if not line:
                     continue
                 try:
@@ -337,13 +387,14 @@ class LLMClient:
             _debug_log(f"原始content({len(all_content)}字符): {all_content[:500]}")
 
             results = parser.get_results()
-            _debug_log(f"解析结果: speaking={len(results['speaking'])} action={len(results['action'])}")
+            _debug_log(f"解析结果: blocks={len(results['blocks'])} speaking={len(results['speaking'])} action={len(results['action'])}")
             _debug_log(f"=== Ollama 完成 ===")
             yield {
                 "type": "done",
                 "thinking": all_thinking.strip(),
                 "speaking": results["speaking"],
                 "action": results["action"],
+                "blocks": results["blocks"],
                 "error": None,
             }
         except requests.exceptions.ConnectionError:
@@ -393,6 +444,8 @@ class LLMClient:
             all_raw = ""
             parser = StreamParser()
             for line in resp.iter_lines(decode_unicode=True):
+                if self._stopped:
+                    break
                 if not line or not line.startswith("data: "):
                     continue
                 data = line[6:].strip()
@@ -412,13 +465,14 @@ class LLMClient:
             _debug_log(f"原始输出({len(all_raw)}字符): {all_raw[:2000]}")
 
             results = parser.get_results()
-            _debug_log(f"解析结果: speaking={len(results['speaking'])} action={len(results['action'])}")
+            _debug_log(f"解析结果: blocks={len(results['blocks'])} speaking={len(results['speaking'])} action={len(results['action'])}")
             _debug_log(f"=== OpenAI 完成 ===")
             yield {
                 "type": "done",
                 "thinking": "",
                 "speaking": results["speaking"],
                 "action": results["action"],
+                "blocks": results["blocks"],
                 "error": None,
             }
         except requests.exceptions.HTTPError as e:

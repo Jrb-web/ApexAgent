@@ -19,6 +19,16 @@ class ApexAgent:
     def __init__(self):
         self._llm = LLMClient()
         self._executor = ActionExecutor()
+        self._stop_event = threading.Event()
+
+    def stop(self):
+        """停止当前推理"""
+        self._stop_event.set()
+        self._llm.stop()
+
+    def reset_stop(self):
+        """重置停止标志（新对话前调用）"""
+        self._stop_event.clear()
 
     def run_async(
         self,
@@ -68,14 +78,40 @@ class ApexAgent:
         all_speaking = ""
 
         for iteration in range(MAX_ITERATIONS):
-            chunk_data = {"thinking": "", "speaking": "", "action": "", "error": None}
+            if self._stop_event.is_set():
+                return {"thinking": all_thinking, "speaking": all_speaking,
+                        "success": False, "error": "用户手动停止",
+                        "messages": messages, "action": "", "exec_result": None,
+                        "blocks": []}
+            chunk_data = {"thinking": "", "speaking": "", "action": "", "error": None,
+                          "blocks": [], "_block": None, "_block_content": ""}
 
             for chunk in self._llm.chat_stream(messages):
                 if chunk.get("error"):
                     chunk_data["error"] = chunk["error"]
                     break
                 t = chunk.get("type", "")
-                if t in ("thinking", "speaking", "action"):
+                if t == "block_start":
+                    # 新块开始：flush 旧块，标记块类型
+                    blk_type = chunk.get("content", "")
+                    if chunk_data["_block"] and chunk_data["_block_content"].strip():
+                        chunk_data["blocks"].append(
+                            {"type": chunk_data["_block"], "content": chunk_data["_block_content"].strip()})
+                    chunk_data["_block"] = blk_type
+                    chunk_data["_block_content"] = ""
+                    if on_chunk:
+                        on_chunk(t, blk_type)
+                elif t in ("thinking", "speaking", "action"):
+                    # 类型切换检测（当 block_start 没发出时作为 fallback）
+                    if chunk_data["_block"] is not None and t != chunk_data["_block"]:
+                        if chunk_data["_block_content"].strip():
+                            chunk_data["blocks"].append(
+                                {"type": chunk_data["_block"], "content": chunk_data["_block_content"].strip()})
+                        chunk_data["_block"] = t
+                        chunk_data["_block_content"] = chunk.get("content", "")
+                    else:
+                        chunk_data["_block"] = t
+                        chunk_data["_block_content"] += chunk.get("content", "")
                     chunk_data[t] += chunk.get("content", "")
                     if on_chunk:
                         on_chunk(t, chunk.get("content", ""))
@@ -83,78 +119,83 @@ class ApexAgent:
                     chunk_data["thinking"] = chunk.get("thinking", "")
                     chunk_data["speaking"] = chunk.get("speaking", "")
                     chunk_data["action"] = chunk.get("action", "")
+                    chunk_data["blocks"] = chunk.get("blocks", [])
+
+            # flush 最后一个块
+            if chunk_data["_block"] and chunk_data["_block_content"].strip():
+                chunk_data["blocks"].append(
+                    {"type": chunk_data["_block"], "content": chunk_data["_block_content"].strip()})
 
             if chunk_data["error"]:
                 return {"thinking": all_thinking, "speaking": all_speaking,
                         "success": False, "error": chunk_data["error"],
-                        "messages": messages}
+                        "messages": messages, "blocks": chunk_data.get("blocks", [])}
 
             thinking = chunk_data.get("thinking", "")
             speaking = chunk_data.get("speaking", "")
             action = chunk_data.get("action", "")
+            blocks = chunk_data.get("blocks", [])
 
             if thinking:
                 all_thinking += thinking + "\n"
             if speaking:
                 all_speaking += speaking + "\n"
 
-            # 无 action → 结束
-            if not action or not action.strip():
+            # 如果没有 action 相关块，直接结束
+            has_action = any(b["type"] == "action" and b["content"].strip() for b in blocks)
+            if not has_action:
                 messages.append({"role": "assistant",
                                  "content": speaking or thinking or "任务已完成。"})
                 return {"thinking": all_thinking, "speaking": all_speaking,
                         "success": True, "error": None, "messages": messages,
-                        "action": "", "exec_result": None}
+                        "action": "", "exec_result": None, "blocks": blocks}
 
-            # 校验 action：XML 格式错误就跳过执行
-            if not self._is_valid_action(action):
-                if on_chunk:
-                    on_chunk("speaking",
-                             "\n\n⚠️ 模型生成的指令格式错误，已跳过执行。\n")
-                messages.append({"role": "assistant",
-                                 "content": speaking or thinking or "任务已完成。"})
-                return {"thinking": all_thinking, "speaking": all_speaking,
-                        "success": True, "error": None, "messages": messages,
-                        "action": action, "exec_result": None}
+            # 顺序执行 blocks 中的 action
+            all_exec_results = []
+            all_blocks = []
+            for bi, blk in enumerate(blocks):
+                all_blocks.append(dict(blk))
+                if blk["type"] == "action" and blk["content"].strip():
+                    act = blk["content"]
+                    if not self._is_valid_action(act):
+                        if on_chunk:
+                            on_chunk("speaking",
+                                     "\n\n⚠️ 模型生成的指令格式错误，已跳过执行。\n")
+                        continue
 
-            # 有 action → 执行
+                    exec_result = self._executor.execute(act)
+                    all_exec_results.append(exec_result)
+
+                    results = exec_result.get("results", [])
+                    if results:
+                        outputs = []
+                        for r in results:
+                            if isinstance(r, dict):
+                                inst = r.get("instruction", "")
+                                out = r.get("output", "")
+                                outputs.append(f"[{inst}]: {out}")
+                            else:
+                                outputs.append(str(r))
+                        clean_summary = "\n".join(outputs)
+                    else:
+                        clean_summary = "（无文本输出）"
+
+                    result_text = (
+                        f"[系统通知] 你的第{bi+1}条指令已执行完毕，结果：\n{clean_summary}"
+                    )
+                    messages.append({"role": "user", "content": result_text})
+
             assistant_content = speaking or thinking
             messages.append({"role": "assistant", "content": assistant_content})
 
-            exec_result = self._executor.execute(action)
-            if not exec_result["success"]:
-                # 执行失败也结束，不继续循环（防止连锁污染）
-                # 不推送原始错误到 speaking，action 卡片会显示失败状态
-                return {"thinking": all_thinking, "speaking": all_speaking,
-                        "success": False,
-                        "error": f"指令执行失败: {exec_result.get('error', '')}",
-                        "messages": messages,
-                        "action": action, "exec_result": exec_result}
+            return {"thinking": all_thinking, "speaking": all_speaking,
+                    "success": True, "error": None, "messages": messages,
+                    "action": action, "exec_result": all_exec_results,
+                    "blocks": all_blocks}
 
-            # 仅发送干净的摘要给模型，不包含原始字典
-            results = exec_result.get("results", [])
-            if results:
-                outputs = []
-                for r in results:
-                    if isinstance(r, dict):
-                        inst = r.get("instruction", "")
-                        out = r.get("output", "")
-                        outputs.append(f"[{inst}]: {out}")
-                    else:
-                        outputs.append(str(r))
-                clean_summary = "\n".join(outputs)
-            else:
-                clean_summary = "（无文本输出）"
-
-            result_text = (
-                f"[系统通知] 你的上一条指令已执行完毕，结果：\n{clean_summary}"
-            )
-            messages.append({"role": "user", "content": result_text})
-
-        # 超过最大轮次
         return {"thinking": all_thinking, "speaking": all_speaking,
                 "success": False, "error": f"推理轮次超过上限({MAX_ITERATIONS})",
-                "messages": messages, "action": "", "exec_result": None}
+                "messages": messages, "action": "", "exec_result": None, "blocks": []}
 
     def _is_valid_action(self, action: str) -> bool:
         """校验 action 是否包含类XML指令标签（宽松匹配，兼容非标准属性格式如 key>value）"""

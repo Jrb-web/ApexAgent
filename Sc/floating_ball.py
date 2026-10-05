@@ -526,6 +526,213 @@ class HistoryDialog(QDialog):
         self.accept()
 
 
+class CollapsibleThinkingBubble(QWidget):
+    """可折叠的思考气泡 —— 小三角 + 微光骨架屏 + 流光边框"""
+
+    def __init__(self, text="", collapsed=False, parent=None):
+        super().__init__(parent)
+        self._collapsed = collapsed
+        self._full_text = text
+        self._glow_active = False
+        self._shimmer_offset = 0.0
+        self._setup_ui()
+        self._start_shimmer()
+
+    def _setup_ui(self):
+        self.setStyleSheet("background: transparent;")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(1)
+
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(4)
+
+        self._toggle_btn = QPushButton()
+        self._toggle_btn.setFixedSize(20, 20)
+        self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._toggle_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(120, 140, 200, 70);
+                color: #a0b0d8;
+                border: none;
+                border-radius: 10px;
+                font-size: 10px;
+                font-weight: bold;
+                padding: 0;
+            }
+            QPushButton:hover {
+                background: rgba(140, 160, 220, 120);
+                color: #d0d8f8;
+            }
+        """)
+        self._update_toggle_icon()
+        self._toggle_btn.clicked.connect(self._toggle)
+        header_row.addWidget(self._toggle_btn)
+
+        self._hint_label = QLabel("思考过程")
+        self._hint_label.setFont(QFont("Microsoft YaHei", 9, QFont.Weight.Bold))
+        self._hint_label.setStyleSheet("color: #9098c0; background: transparent; border: none;")
+        header_row.addWidget(self._hint_label)
+        header_row.addStretch()
+        layout.addLayout(header_row)
+
+        self._content = QLabel(self._full_text)
+        self._content.setWordWrap(True)
+        self._content.setFont(QFont("Microsoft YaHei", 9))
+        self._content.setStyleSheet("""
+            QLabel {
+                background-color: rgba(60, 60, 80, 100);
+                color: #9098b8;
+                border-radius: 10px;
+                padding: 6px 10px;
+                margin: 1px 0;
+                border-left: 3px solid rgba(120, 140, 200, 80);
+            }
+        """)
+        self._content.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._content.setVisible(not self._collapsed)
+        layout.addWidget(self._content)
+
+    def _start_shimmer(self):
+        self._shimmer_timer = QTimer(self)
+        self._shimmer_timer.timeout.connect(self._tick_shimmer)
+        self._shimmer_timer.start(35)
+
+    def _tick_shimmer(self):
+        self._shimmer_offset = (self._shimmer_offset + 0.05) % 2.0
+        self.update()
+
+    def _stop_shimmer(self):
+        if hasattr(self, "_shimmer_timer") and self._shimmer_timer.isActive():
+            self._shimmer_timer.stop()
+
+    def _update_toggle_icon(self):
+        self._toggle_btn.setText("▶" if self._collapsed else "▼")
+
+    def setGlowActive(self, active):
+        self._glow_active = active
+        self.update()
+
+    def _toggle(self):
+        self._collapsed = not self._collapsed
+        self._update_toggle_icon()
+        self._content.setVisible(not self._collapsed)
+        self.updateGeometry()
+
+    def setText(self, text):
+        self._full_text = text
+        self._content.setText(text)
+
+    def text(self):
+        return self._full_text
+
+    def isCollapsed(self):
+        return self._collapsed
+
+    def setCollapsed(self, collapsed):
+        self._collapsed = collapsed
+        self._update_toggle_icon()
+        self._content.setVisible(not self._collapsed)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(self.rect())
+
+        if self._collapsed:
+            # 折叠态：微光骨架屏 — 移动渐变条模拟流式加载
+            shimmer_rect = QRectF(rect.x(), rect.y() + 24, rect.width(), 8)
+            shimmer_grad = QLinearGradient(
+                shimmer_rect.left() + (self._shimmer_offset - 1) * shimmer_rect.width(),
+                0,
+                shimmer_rect.left() + self._shimmer_offset * shimmer_rect.width(),
+                0
+            )
+            shimmer_grad.setColorAt(0.0, QColor(45, 55, 85, 140))
+            shimmer_grad.setColorAt(0.5, QColor(90, 110, 170, 160))
+            shimmer_grad.setColorAt(1.0, QColor(45, 55, 85, 140))
+            path = QPainterPath()
+            path.addRoundedRect(shimmer_rect, 4, 4)
+            painter.fillPath(path, QBrush(shimmer_grad))
+        elif self._glow_active:
+            # 展开态 + 流式激活：微光扫描效果
+            glow_grad = QLinearGradient(
+                rect.left() + (self._shimmer_offset - 1) * rect.width() * 0.6,
+                0,
+                rect.left() + self._shimmer_offset * rect.width() * 0.6,
+                0
+            )
+            glow_grad.setColorAt(0.0, QColor(80, 110, 200, 0))
+            glow_grad.setColorAt(0.5, QColor(120, 160, 240, 35))
+            glow_grad.setColorAt(1.0, QColor(80, 110, 200, 0))
+            path = QPainterPath()
+            path.addRoundedRect(rect, 10, 10)
+            painter.fillPath(path, QBrush(glow_grad))
+
+        # 流光边框（展开+流式时）
+        if not self._collapsed and self._glow_active:
+            border_alpha = int(60 + 30 * abs(1 - self._shimmer_offset))
+            pen = QPen(QColor(120, 160, 255, border_alpha), 1.8)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), 10, 10)
+
+        painter.end()
+
+
+# ============================================================
+#  流光边框气泡包装器（用于 speaking 气泡流式动画）
+# ============================================================
+class GlowBorderBubble(QWidget):
+    """带流光边框的包装器 — 包裹 speaking QLabel 显示流式动画"""
+
+    def __init__(self, child, parent=None):
+        super().__init__(parent)
+        self._child = child
+        self._glow_active = False
+        self._shimmer_offset = 0.0
+        self.setStyleSheet("background: transparent;")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(3, 3, 3, 3)
+        layout.addWidget(self._child)
+        self._start_glow()
+
+    def _start_glow(self):
+        self._glow_timer = QTimer(self)
+        self._glow_timer.timeout.connect(self._tick_glow)
+        self._glow_timer.start(35)
+
+    def _tick_glow(self):
+        self._shimmer_offset = (self._shimmer_offset + 0.05) % 2.0
+        if self._glow_active:
+            self.update()
+
+    def setGlowActive(self, active):
+        self._glow_active = active
+        self.update()
+
+    def setText(self, text):
+        self._child.setText(text)
+
+    def text(self):
+        return self._child.text()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self._glow_active:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        alpha = int(50 + 30 * abs(1 - self._shimmer_offset))
+        pen = QPen(QColor(140, 180, 255, alpha), 1.5)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(rect, 14, 14)
+        painter.end()
+
+
 # ============================================================
 #  Action 卡片 — 微光骨架屏 + 中文命令名
 # ============================================================
@@ -679,6 +886,7 @@ class ActionCard(QFrame):
         for en, zh in self._commands:
             lbl = QLabel(f"  {zh}")
             lbl.setFont(QFont("Microsoft YaHei", 10))
+            lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             lbl.setStyleSheet("color: #c8d0e8; background: rgba(255,255,255,8); "
                               "border-radius: 6px; padding: 4px 8px;")
             self._cmd_layout.addWidget(lbl)
@@ -686,6 +894,7 @@ class ActionCard(QFrame):
     def set_results(self, results_data: dict):
         """设置执行结果 results_data = executor.execute() 返回值"""
         self._state = "done"
+        self._stop_shimmer()
         success = results_data.get("success", False)
         results_list = results_data.get("results", [])
 
@@ -712,6 +921,7 @@ class ActionCard(QFrame):
                 lbl = QLabel(text)
                 lbl.setFont(QFont("Microsoft YaHei", 9))
                 lbl.setWordWrap(True)
+                lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
                 lbl.setStyleSheet("color: #90a0c0; background: transparent; padding: 2px 6px;")
                 self._result_layout.addWidget(lbl)
         else:
@@ -720,6 +930,7 @@ class ActionCard(QFrame):
                 lbl = QLabel(str(err)[:200])
                 lbl.setFont(QFont("Microsoft YaHei", 9))
                 lbl.setWordWrap(True)
+                lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
                 lbl.setStyleSheet("color: #f08080; background: transparent; padding: 2px 6px;")
                 self._result_layout.addWidget(lbl)
 
@@ -747,16 +958,17 @@ class PanelWindow(QWidget):
         self._conv_id = ConfigManager.get_current_conversation() or ""
         self._agent = ApexAgent()
         self._is_processing = False
-        # action 卡片
-        self._action_card = None
-        self._action_buffer = ""
+        # 步骤卡片系统（时间线顺序块，替代固定3块）
+        self._step_cards = []         # [StepCard, ...]
+        self._active_card = None      # 当前流式卡片
+        self._action_buffer = ""      # action XML 缓冲
         # 流式队列 + 轮询定时器
         self._chunk_queue = queue.Queue()
         self._poll_timer = QTimer()
         self._poll_timer.timeout.connect(self._drain_queue)
-        # Typewriter 打字机动画：待揭示字符缓冲 + 逐字渲染定时器
-        self._tw_pending_thinking = ""
-        self._tw_pending_speaking = ""
+        # 单向打字机：单一缓冲 + 单一卡片目标
+        self._tw_buffer = ""
+        self._tw_card = None
         self._tw_timer = QTimer()
         self._tw_timer.timeout.connect(self._typewriter_tick)
         self._init_ui()
@@ -932,6 +1144,28 @@ class PanelWindow(QWidget):
         send_btn.clicked.connect(self._on_send)
         input_row.addWidget(send_btn)
 
+        self._stop_btn = QPushButton("■")
+        self._stop_btn.setFixedSize(36, 54)
+        self._stop_btn.setFont(QFont("Microsoft YaHei", 11))
+        self._stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._stop_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(240, 80, 80, 140);
+                color: #ffffff;
+                border: none;
+                border-radius: 10px;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 100, 100, 200);
+            }
+            QPushButton:pressed {
+                background-color: rgba(200, 50, 50, 180);
+            }
+        """)
+        self._stop_btn.clicked.connect(self._on_stop)
+        self._stop_btn.hide()
+        input_row.addWidget(self._stop_btn)
+
         layout.addLayout(input_row)
 
     # ----- 拖动逻辑 -----
@@ -1035,9 +1269,8 @@ class PanelWindow(QWidget):
         sys_info = f"[系统信息] 操作系统: {platform.system()} {platform.release()}，架构: {platform.machine()}，主机名: {platform.node()}"
         user_msg_with_ctx = f"{sys_info}\n\n{text}"
 
-        # 创建双气泡：thinking 灰色小字 + speaking 白色大字（立刻显示等待提示）
-        self._thinking_bubble = self._add_stream_bubble("⏳ 思考中...", is_thinking=True)
-        self._speaking_bubble = self._add_stream_bubble("⏳ 等待回复...", is_thinking=False)
+        # 显示停止按钮
+        self._stop_btn.show()
 
         # 构建对话上下文
         context_messages = []
@@ -1048,9 +1281,14 @@ class PanelWindow(QWidget):
 
         # 重置队列状态（线程安全）
         self._chunk_queue = queue.Queue()
-        # 重置 Typewriter 缓冲区
-        self._tw_pending_thinking = ""
-        self._tw_pending_speaking = ""
+        self._tw_buffer = ""
+        self._tw_card = None
+        self._active_card = None
+        self._step_cards = []
+        self._action_buffer = ""
+
+        # 重置 Agent 停止标志
+        self._agent.reset_stop()
 
         # 启动轮询定时器
         self._poll_timer.start(self._STREAM_POLL_MS)
@@ -1063,6 +1301,37 @@ class PanelWindow(QWidget):
             on_complete=self._push_complete,
         )
 
+    def _on_stop(self):
+        """停止当前 Agent 推理"""
+        if not self._is_processing:
+            return
+        self._agent.stop()
+        self._poll_timer.stop()
+        self._chunk_queue = queue.Queue()
+        self._typewriter_flush()
+        # 闭合 action 卡片
+        action_buf = self._action_buffer.strip()
+        exec_result = None
+        if action_buf and self._active_card and isinstance(self._active_card, ActionCard):
+            cmds = _parse_action_card_info(action_buf)
+            if cmds:
+                self._active_card.set_commands(cmds)
+                exec_result = {"success": False, "results": [{"output": "⏹ 用户手动停止"}], "error": "用户手动停止"}
+            else:
+                self._msg_layout.removeWidget(self._active_card)
+                self._active_card.deleteLater()
+                self._active_card = None
+        self._action_buffer = ""
+        self._on_agent_complete({
+            "thinking": "",
+            "speaking": "",
+            "success": False,
+            "error": "用户手动停止",
+            "messages": [],
+            "action": action_buf,
+            "exec_result": [exec_result] if exec_result else [],
+        })
+
     def _push_chunk(self, chunk_type: str, text: str):
         """子线程回调：把 chunk 推入队列"""
         self._chunk_queue.put(("chunk", chunk_type, text))
@@ -1072,124 +1341,79 @@ class PanelWindow(QWidget):
         self._chunk_queue.put(("done", result))
 
     def _drain_queue(self):
-        """主线程定时器：从队列取 chunk，推入 Typewriter 缓冲区"""
+        """主线程定时器：从队列取 chunk，分发到步骤卡片"""
         try:
             item = self._chunk_queue.get_nowait()
             kind = item[0]
             if kind == "chunk":
                 _, chunk_type, text = item
-                if chunk_type == "thinking":
-                    if hasattr(self, "_thinking_bubble") and self._thinking_bubble:
-                        cur = self._thinking_bubble.text()
-                        if cur.startswith("⏳"):
-                            self._thinking_bubble.setText("")
-                        self._tw_pending_thinking += text
+                if chunk_type == "block_start":
+                    self._on_block_start(text)
+                elif chunk_type == "thinking":
+                    self._on_step_chunk("thinking", text)
                 elif chunk_type == "speaking":
-                    if hasattr(self, "_speaking_bubble") and self._speaking_bubble:
-                        cur = self._speaking_bubble.text()
-                        if cur.startswith("⏳"):
-                            self._speaking_bubble.setText("")
-                        self._tw_pending_speaking += text
+                    self._on_step_chunk("speaking", text)
                 elif chunk_type == "action":
-                    self._drain_action_chunk(text)
-                # 启动打字机
-                if (self._tw_pending_thinking or self._tw_pending_speaking) and not self._tw_timer.isActive():
-                    self._tw_timer.start(25)
+                    self._on_action_chunk(text)
+                self._scroll_to_bottom()
             elif kind == "done":
-                self._drain_done(item[1])
+                self._on_drain_done(item[1])
                 return
             self._scroll_to_bottom()
         except queue.Empty:
             pass
 
-    def _drain_action_chunk(self, text: str):
-        """处理 action 流式 chunk：懒创建卡片 + 微光骨架屏"""
-        self._action_buffer += text
-        if self._action_card is None and self._action_buffer.strip():
-            self._action_card = ActionCard()
-            # 插入到消息列表末尾
-            self._msg_layout.addWidget(self._action_card)
-            self._msg_layout.addStretch()
-        # 骨架屏自动以 shimmer 动画运行，不需额外更新
-
-    def _typewriter_tick(self):
-        """打字机定时器：每 25ms 从待揭示缓冲区取出 2 字符逐字渲染"""
-        any_revealed = False
-        if self._tw_pending_thinking:
-            chunk = self._tw_pending_thinking[:2]
-            self._tw_pending_thinking = self._tw_pending_thinking[2:]
-            if hasattr(self, "_thinking_bubble") and self._thinking_bubble:
-                self._thinking_bubble.setText(self._thinking_bubble.text() + chunk)
-                self._thinking_bubble.repaint()
-            any_revealed = True
-        if self._tw_pending_speaking:
-            chunk = self._tw_pending_speaking[:2]
-            self._tw_pending_speaking = self._tw_pending_speaking[2:]
-            if hasattr(self, "_speaking_bubble") and self._speaking_bubble:
-                self._speaking_bubble.setText(self._speaking_bubble.text() + chunk)
-                self._speaking_bubble.repaint()
-            any_revealed = True
-        if not any_revealed:
-            self._tw_timer.stop()
-        self._scroll_to_bottom()
-
-    def _typewriter_flush(self):
-        """立即展现所有剩余 Typewriter 缓冲字符（Agent 完成时调用）"""
-        self._tw_timer.stop()
-        if self._tw_pending_thinking:
-            if hasattr(self, "_thinking_bubble") and self._thinking_bubble:
-                self._thinking_bubble.setText(self._thinking_bubble.text() + self._tw_pending_thinking)
-                self._thinking_bubble.repaint()
-            self._tw_pending_thinking = ""
-        if self._tw_pending_speaking:
-            if hasattr(self, "_speaking_bubble") and self._speaking_bubble:
-                self._speaking_bubble.setText(self._speaking_bubble.text() + self._tw_pending_speaking)
-                self._speaking_bubble.repaint()
-            self._tw_pending_speaking = ""
-
-    def _drain_done(self, result: dict):
-        """Agent 完成：停止轮询，闭合 action 卡片，刷新打字机"""
-        self._poll_timer.stop()
-        self._chunk_queue = queue.Queue()
-        # 立即展现所有剩余 Typrewriter 缓冲字符
+    def _on_block_start(self, block_type: str):
+        """新步骤块开始 — flush 旧块，创建新步骤卡片"""
         self._typewriter_flush()
-        action_content = result.get("action", "") or self._action_buffer.strip()
-        if action_content and hasattr(self, "_action_card") and self._action_card:
-            cmds = _parse_action_card_info(action_content)
+        # 闭合当前 action 卡片
+        if isinstance(self._active_card, ActionCard) and self._action_buffer.strip():
+            cmds = _parse_action_card_info(self._action_buffer.strip())
             if cmds:
-                self._action_card.set_commands(cmds)
-            else:
-                self._msg_layout.removeWidget(self._action_card)
-                self._action_card.deleteLater()
-                self._action_card = None
-        elif hasattr(self, "_action_card") and self._action_card:
-            self._msg_layout.removeWidget(self._action_card)
-            self._action_card.deleteLater()
-            self._action_card = None
+                self._active_card.set_commands(cmds)
+        self._active_card = None
         self._action_buffer = ""
-        self._on_agent_complete(result)
 
-    def _add_stream_bubble(self, text, is_thinking):
-        """创建流式气泡：thinking=灰色小字, speaking=白色大字"""
-        bubble = QLabel(text)
-        bubble.setWordWrap(True)
-        bubble.setMaximumWidth(int(self.PANEL_WIDTH * 0.85))
+    def _on_step_chunk(self, chunk_type: str, text: str):
+        """thinking/speaking 流式块 → 并入打字机"""
+        if self._active_card is None or not isinstance(self._active_card, (CollapsibleThinkingBubble, GlowBorderBubble)):
+            self._active_card = self._create_step_card(chunk_type)
+        if not self._tw_timer.isActive():
+            self._tw_timer.start(25)
+        self._tw_card = self._active_card
+        if isinstance(self._active_card, CollapsibleThinkingBubble):
+            cur = self._active_card.text()
+            if cur.startswith("⏳"):
+                self._active_card.setText("")
+        elif isinstance(self._active_card, GlowBorderBubble):
+            cur = self._active_card.text()
+            if cur.startswith("⏳"):
+                self._active_card.setText("")
+        self._tw_buffer += text
 
-        if is_thinking:
-            bubble.setFont(QFont("Microsoft YaHei", 9))
-            bubble.setStyleSheet("""
-                QLabel {
-                    background-color: rgba(60, 60, 80, 100);
-                    color: #9098b8;
-                    border-radius: 10px;
-                    padding: 6px 10px;
-                    margin: 1px 0;
-                    border-left: 3px solid rgba(120, 140, 200, 80);
-                }
-            """)
+    def _on_action_chunk(self, text: str):
+        """action 流式块 → 创建/更新 ActionCard"""
+        self._typewriter_flush()
+        self._action_buffer += text
+        if not isinstance(self._active_card, ActionCard):
+            self._active_card = ActionCard()
+            self._active_card.setMaximumWidth(int(self.PANEL_WIDTH * 0.88))
+            self._msg_layout.addWidget(self._active_card)
+            self._msg_layout.addStretch()
+            self._step_cards.append(self._active_card)
+
+    def _create_step_card(self, step_type: str):
+        """创建步骤卡片：thinking→CollapsibleThinkingBubble, speaking→GlowBorderBubble"""
+        if step_type == "thinking":
+            card = CollapsibleThinkingBubble("⏳ 思考中...", collapsed=True)
+            card.setGlowActive(True)
+            card.setMaximumWidth(int(self.PANEL_WIDTH * 0.88))
         else:
-            bubble.setFont(QFont("Microsoft YaHei", 12))
-            bubble.setStyleSheet("""
+            lbl = QLabel("⏳ 等待回复...")
+            lbl.setWordWrap(True)
+            lbl.setMaximumWidth(int(self.PANEL_WIDTH * 0.80))
+            lbl.setFont(QFont("Microsoft YaHei", 12))
+            lbl.setStyleSheet("""
                 QLabel {
                     background-color: rgba(255, 255, 255, 14);
                     color: #f0f0f8;
@@ -1198,12 +1422,22 @@ class PanelWindow(QWidget):
                     margin: 2px 0;
                 }
             """)
+            lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            card = GlowBorderBubble(lbl)
+            card.setGlowActive(True)
+            card.setMaximumWidth(int(self.PANEL_WIDTH * 0.85))
 
+        self._add_step_to_layout(card)
+        self._step_cards.append(card)
+        return card
+
+    def _add_step_to_layout(self, widget):
+        """把步骤卡片 widget 加入消息布局"""
         wrapper = QWidget()
         wrapper.setStyleSheet("background: transparent;")
         wrapper_layout = QHBoxLayout(wrapper)
         wrapper_layout.setContentsMargins(0, 0, 0, 0)
-        wrapper_layout.addWidget(bubble)
+        wrapper_layout.addWidget(widget)
         wrapper_layout.addStretch()
 
         if self._msg_layout.count() > 0:
@@ -1213,47 +1447,123 @@ class PanelWindow(QWidget):
 
         self._msg_layout.addWidget(wrapper)
         self._msg_layout.addStretch()
-        QTimer.singleShot(30, self._scroll_to_bottom)
-        return bubble
+
+    def _typewriter_tick(self):
+        """打字机：每 25ms 从缓冲取 2 字符渲染到当前卡片"""
+        if self._tw_buffer:
+            chunk = self._tw_buffer[:2]
+            self._tw_buffer = self._tw_buffer[2:]
+            if self._tw_card:
+                # 展开 thinking 卡片
+                if isinstance(self._tw_card, CollapsibleThinkingBubble) and self._tw_card.isCollapsed():
+                    self._tw_card.setCollapsed(False)
+                self._tw_card.setText(self._tw_card.text() + chunk)
+                self._tw_card.repaint()
+            self._scroll_to_bottom()
+        else:
+            self._tw_timer.stop()
+
+    def _typewriter_flush(self):
+        """立即展现所有剩余打字机缓冲字符"""
+        self._tw_timer.stop()
+        if self._tw_buffer and self._tw_card:
+            if isinstance(self._tw_card, CollapsibleThinkingBubble) and self._tw_card.isCollapsed():
+                self._tw_card.setCollapsed(False)
+            self._tw_card.setText(self._tw_card.text() + self._tw_buffer)
+            self._tw_card.repaint()
+        self._tw_buffer = ""
+        self._tw_card = None
+
+    def _on_drain_done(self, result: dict):
+        """Agent 完成：停止轮询，闭合卡片，刷新打字机"""
+        self._poll_timer.stop()
+        self._chunk_queue = queue.Queue()
+        self._typewriter_flush()
+        # 闭合 action 卡片
+        action_content = result.get("action", "") or self._action_buffer.strip()
+        if action_content and isinstance(self._active_card, ActionCard):
+            cmds = _parse_action_card_info(action_content)
+            if cmds:
+                self._active_card.set_commands(cmds)
+            else:
+                self._msg_layout.removeWidget(self._active_card)
+                self._active_card.deleteLater()
+                self._active_card = None
+        elif isinstance(self._active_card, ActionCard) and not self._action_buffer.strip():
+            self._msg_layout.removeWidget(self._active_card)
+            self._active_card.deleteLater()
+            self._active_card = None
+        self._action_buffer = ""
+        self._active_card = None
+        self._on_agent_complete(result)
 
     def _on_agent_complete(self, result: dict):
-        """Agent 推理完成回调 — 保留流式气泡，不删除"""
+        """Agent 推理完成回调 — 关闭流光，填充结果，保存对话"""
         self._is_processing = False
 
+        # 关闭所有步骤卡片的流光
+        for card in self._step_cards:
+            if hasattr(card, "setGlowActive"):
+                card.setGlowActive(False)
+
+        self._stop_btn.hide()
+
+        thinking = result.get("thinking", "")
         speaking = result.get("speaking", "")
         error = result.get("error", "")
 
-        # 如果有错误，追加到 speaking 气泡
+        # 错误提示 — 在最后一个 speaking 卡片上追加
         if error:
-            if hasattr(self, "_speaking_bubble") and self._speaking_bubble:
-                current = self._speaking_bubble.text()
-                self._speaking_bubble.setText(current + f"\n\n❌ 出错了: {error}")
+            for card in reversed(self._step_cards):
+                if isinstance(card, GlowBorderBubble):
+                    cur = card.text()
+                    card.setText(cur + f"\n\n❌ 出错了: {error}")
+                    break
 
-        # 更新 action 卡片执行结果
-        if hasattr(self, "_action_card") and self._action_card:
-            exec_result = result.get("exec_result")
-            if exec_result is not None:
-                self._action_card.set_results(exec_result)
+        # 填充 action 卡片执行结果
+        exec_results = result.get("exec_result", [])
+        if isinstance(exec_results, list):
+            action_cards = [c for c in self._step_cards if isinstance(c, ActionCard)]
+            for i, ac in enumerate(action_cards):
+                if i < len(exec_results) and exec_results[i]:
+                    ac.set_results(exec_results[i])
+        elif isinstance(exec_results, dict) and exec_results:
+            for c in self._step_cards:
+                if isinstance(c, ActionCard):
+                    c.set_results(exec_results)
+                    break
 
-        # 保存到对话（仅 speaking）
+        # 保存到对话
         final_text = speaking.strip() if speaking else (error or "任务已完成。")
+        thinking_text = ""
+        for card in self._step_cards:
+            if isinstance(card, CollapsibleThinkingBubble):
+                t = card.text()
+                if t and not t.startswith("⏳"):
+                    thinking_text += t + "\n"
+
         conv = ConversationStore.load(self._conv_id)
         if conv:
             conv["messages"].append({
                 "role": "assistant",
                 "content": final_text,
+                "thinking": thinking_text.strip() if thinking_text else thinking.strip() if thinking else "",
+                "action": result.get("action", ""),
                 "timestamp": datetime.now().isoformat()
             })
             agent_messages = result.get("messages", [])
             conv["_agent_context"] = agent_messages
             ConversationStore.save(conv)
 
-        # 清空引用但不删除气泡（气泡就是最终结果）
-        self._thinking_bubble = None
-        self._speaking_bubble = None
-        self._action_card = None
-        self._tw_pending_thinking = ""
-        self._tw_pending_speaking = ""
+        # 清空引用但保留卡片
+        self._active_card = None
+        self._tw_buffer = ""
+        self._tw_card = None
+        self._action_buffer = ""
+
+    def _scroll_to_bottom(self):
+        sb = self._scroll.verticalScrollBar()
+        sb.setValue(sb.maximum())
 
     def _ensure_conversation(self):
         if not self._conv_id:
@@ -1273,10 +1583,59 @@ class PanelWindow(QWidget):
             if conv and conv.get("messages"):
                 self._hint_label.hide()
                 for msg in conv["messages"]:
-                    self._add_message(
-                        msg["content"],
-                        is_user=(msg["role"] == "user")
-                    )
+                    role = msg.get("role", "user")
+                    content = msg.get("content", "")
+                    thinking = msg.get("thinking", "")
+                    action_xml = msg.get("action", "")
+
+                    if role == "user":
+                        self._add_message(content, is_user=True)
+                    else:
+                        # 先重建 thinking（可折叠）
+                        if thinking:
+                            self._restore_thinking_bubble(thinking)
+                        # 再重建 speaking
+                        if content:
+                            self._add_message(content, is_user=False)
+                        # 重建 action 卡片
+                        if action_xml:
+                            self._restore_action_card(action_xml)
+
+    def _restore_thinking_bubble(self, thinking_text):
+        """从历史对话中恢复思考气泡（默认折叠状态）"""
+        if not thinking_text.strip():
+            return
+        bubble = CollapsibleThinkingBubble(thinking_text, collapsed=True)
+        bubble.setMaximumWidth(int(self.PANEL_WIDTH * 0.88))
+
+        wrapper = QWidget()
+        wrapper.setStyleSheet("background: transparent;")
+        wrapper_layout = QHBoxLayout(wrapper)
+        wrapper_layout.setContentsMargins(0, 0, 0, 0)
+        wrapper_layout.addWidget(bubble)
+        wrapper_layout.addStretch()
+
+        if self._msg_layout.count() > 0:
+            last = self._msg_layout.itemAt(self._msg_layout.count() - 1)
+            if last.spacerItem():
+                self._msg_layout.removeItem(last)
+
+        self._msg_layout.addWidget(wrapper)
+        self._msg_layout.addStretch()
+
+    def _restore_action_card(self, action_xml):
+        """从历史对话中恢复 action 卡片（已完成状态）"""
+        if not action_xml.strip():
+            return
+        cmds = _parse_action_card_info(action_xml)
+        if not cmds:
+            return
+        card = ActionCard()
+        card.set_commands(cmds)
+        exec_result = {"success": True, "results": [{"output": "历史记录 — 执行结果已归档"}], "error": None}
+        card.set_results(exec_result)
+        self._msg_layout.addWidget(card)
+        self._msg_layout.addStretch()
 
     def _open_history(self):
         self._save_current_conversation()
@@ -1294,10 +1653,20 @@ class PanelWindow(QWidget):
         if conv and conv.get("messages"):
             self._hint_label.hide()
             for msg in conv["messages"]:
-                self._add_message(
-                    msg["content"],
-                    is_user=(msg["role"] == "user")
-                )
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                thinking = msg.get("thinking", "")
+                action_xml = msg.get("action", "")
+
+                if role == "user":
+                    self._add_message(content, is_user=True)
+                else:
+                    if thinking:
+                        self._restore_thinking_bubble(thinking)
+                    if content:
+                        self._add_message(content, is_user=False)
+                    if action_xml:
+                        self._restore_action_card(action_xml)
 
     def _clear_messages(self):
         while self._msg_layout.count():
@@ -1315,6 +1684,7 @@ class PanelWindow(QWidget):
         bubble.setFont(QFont("Microsoft YaHei", 10))
         bubble.setMaximumWidth(int(self.PANEL_WIDTH * 0.7))
         bubble.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        bubble.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
         if is_user:
             bubble.setStyleSheet("""
@@ -1373,10 +1743,6 @@ class PanelWindow(QWidget):
         QTimer.singleShot(50, self._scroll_to_bottom)
 
         return bubble
-
-    def _scroll_to_bottom(self):
-        sb = self._scroll.verticalScrollBar()
-        sb.setValue(sb.maximum())
 
     def _fade_out_hint(self):
         self._hint_anim = QPropertyAnimation(self._hint_opacity, b"opacity")

@@ -4,8 +4,45 @@ ApexAgent 指令执行器
 """
 
 import os
+import sys
 import re
+import subprocess
 import xml.etree.ElementTree as ET
+
+
+def _xml_escape_attrs(tag_xml: str) -> str:
+    """将非标准XML属性格式转为标准格式，例如：
+    <OpenExe 程序路径>/Applications/Safari.app</OpenExe>
+    → <OpenExe 程序路径="">/Applications/Safari.app</OpenExe>
+    <RunCommand cmd="ls"/> → 不变
+    """
+    def _fix(m: re.Match) -> str:
+        tagname = m.group(1)
+        attrs_raw = m.group(2)
+        self_close = m.group(3) or ""
+
+        if not attrs_raw.strip():
+            return m.group(0)
+
+        # 提取属性 token：带引号的完整保留，裸单词加 =""
+        tokens = re.findall(r'(?:"[^"]*"|\'[^\']*\'|[^\s=]+(?:\s*=\s*(?:"[^"]*"|\'[^\']*\'|\S+))?|\S+)', attrs_raw)
+        fixed = []
+        for t in tokens:
+            t = t.strip()
+            if not t:
+                continue
+            if '=' in t:
+                fixed.append(t)
+            else:
+                fixed.append(f'{t}=""')
+        return f"<{tagname} {' '.join(fixed)}{self_close}>" if fixed else m.group(0)
+
+    return re.sub(
+        r'<([A-Za-z][A-Za-z0-9_()]*)\s+(.*?)(/)?>',
+        _fix,
+        tag_xml,
+        flags=re.DOTALL,
+    )
 
 
 class ActionExecutor:
@@ -33,8 +70,9 @@ class ActionExecutor:
 
         results = []
         try:
-            # 包裹虚拟根节点，兼容多条同级指令
-            wrapped = f"<root>{action}</root>"
+            # 预处理非标准XML属性格式（如 key>value → key=""）
+            normalized = _xml_escape_attrs(action)
+            wrapped = f"<root>{normalized}</root>"
             root = ET.fromstring(wrapped)
 
             for child in root:
@@ -124,7 +162,7 @@ class ActionExecutor:
 
     def _handle_search_file(self, attrs: dict, text: str) -> str:
         folder_name = attrs.get("文件夹名", text)
-        search_root = attrs.get("根目录", "C:\\")
+        search_root = attrs.get("根目录", os.path.expanduser("~"))
         results = []
         try:
             for root_dir, dirs, files in os.walk(search_root):
@@ -172,20 +210,76 @@ class ActionExecutor:
     def _handle_open_exe(self, attrs: dict, text: str) -> str:
         path = attrs.get("程序路径", text)
         if not os.path.exists(path):
+            if sys.platform.startswith('darwin'):
+                import glob as _glob
+                app_name = os.path.basename(path)
+                if app_name.endswith('.app'):
+                    for base in ['/Applications', '/System/Applications',
+                                 os.path.expanduser('~/Applications')]:
+                        test_path = os.path.join(base, app_name)
+                        if os.path.exists(test_path):
+                            path = test_path
+                            break
+                    else:
+                        try:
+                            result = subprocess.run(
+                                ['mdfind', f'kMDItemKind=="Application"&&kMDItemFSName=="{app_name}"'],
+                                capture_output=True, text=True, timeout=5
+                            )
+                            found = [l for l in result.stdout.strip().split('\n') if l]
+                            if found and os.path.exists(found[0]):
+                                path = found[0]
+                        except Exception:
+                            pass
+                else:
+                    for base in ['/Applications', '/System/Applications',
+                                 os.path.expanduser('~/Applications')]:
+                        for tst in [f"{app_name}.app", app_name]:
+                            test_path = os.path.join(base, tst)
+                            if os.path.exists(test_path):
+                                path = test_path
+                                break
+                        else:
+                            continue
+                        break
+                    else:
+                        try:
+                            result = subprocess.run(
+                                ['mdfind', f'kMDItemKind=="Application"&&kMDItemDisplayName=="{app_name}*"c'],
+                                capture_output=True, text=True, timeout=5
+                            )
+                            found = [l for l in result.stdout.strip().split('\n') if l]
+                            if found and os.path.exists(found[0]):
+                                path = found[0]
+                        except Exception:
+                            pass
+            if not os.path.exists(path):
+                return f"程序不存在: {text}（已搜索系统但未找到）"
+        if not os.path.exists(path):
             return f"程序不存在: {path}"
         try:
-            os.startfile(path)
+            if sys.platform.startswith('win32'):
+                os.startfile(path)
+            elif sys.platform.startswith('darwin'):
+                subprocess.run(["open", path], check=True)
+            else:
+                subprocess.run(["xdg-open", path], check=True)
             return f"已启动程序: {path}"
         except Exception as e:
             return f"启动程序失败: {str(e)}"
 
     def _handle_read_running(self, attrs: dict, text: str) -> str:
         try:
-            import subprocess
-            result = subprocess.run(
-                ["tasklist", "/FO", "CSV", "/NH"],
-                capture_output=True, text=True, timeout=10
-            )
+            if sys.platform.startswith('win32'):
+                result = subprocess.run(
+                    ["tasklist", "/FO", "CSV", "/NH"],
+                    capture_output=True, text=True, timeout=10
+                )
+            else:
+                result = subprocess.run(
+                    ["ps", "aux"],
+                    capture_output=True, text=True, timeout=10
+                )
             lines = result.stdout.strip().split("\n")[:30]
             return "当前运行进程 (前30个):\n" + "\n".join(lines)
         except Exception as e:
@@ -194,11 +288,16 @@ class ActionExecutor:
     def _handle_kill_process(self, attrs: dict, text: str) -> str:
         pid = attrs.get("pid", text)
         try:
-            import subprocess
-            result = subprocess.run(
-                ["taskkill", "/PID", str(pid), "/F"],
-                capture_output=True, text=True, timeout=10
-            )
+            if sys.platform.startswith('win32'):
+                result = subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/F"],
+                    capture_output=True, text=True, timeout=10
+                )
+            else:
+                result = subprocess.run(
+                    ["kill", "-9", str(pid)],
+                    capture_output=True, text=True, timeout=10
+                )
             return f"进程终止结果: {result.stdout.strip() or '成功'}"
         except Exception as e:
             return f"终止进程失败: {str(e)}"
@@ -269,12 +368,17 @@ class ActionExecutor:
 
     def _handle_get_network_status(self, attrs: dict, text: str) -> str:
         try:
-            import subprocess
-            result = subprocess.run(
-                ["ipconfig"],
-                capture_output=True, text=True, timeout=10,
-                shell=True
-            )
+            if sys.platform.startswith('win32'):
+                result = subprocess.run(
+                    ["ipconfig"],
+                    capture_output=True, text=True, timeout=10,
+                    shell=True
+                )
+            else:
+                result = subprocess.run(
+                    ["ifconfig"],
+                    capture_output=True, text=True, timeout=10
+                )
             return result.stdout.strip()[:3000]
         except Exception as e:
             return f"获取网络信息失败: {str(e)}"
@@ -300,12 +404,22 @@ class ActionExecutor:
 
     def _handle_clipboard_read(self, attrs: dict, text: str) -> str:
         try:
-            import subprocess
-            result = subprocess.run(
-                ["powershell", "-Command", "Get-Clipboard"],
-                capture_output=True, text=True, timeout=5,
-                shell=True
-            )
+            if sys.platform.startswith('darwin'):
+                result = subprocess.run(
+                    ["pbpaste"],
+                    capture_output=True, text=True, timeout=5
+                )
+            elif sys.platform.startswith('win32'):
+                result = subprocess.run(
+                    ["powershell", "-Command", "Get-Clipboard"],
+                    capture_output=True, text=True, timeout=5,
+                    shell=True
+                )
+            else:
+                result = subprocess.run(
+                    ["xclip", "-selection", "clipboard", "-o"],
+                    capture_output=True, text=True, timeout=5
+                )
             content = result.stdout.strip()
             return content if content else "剪贴板为空"
         except Exception as e:
@@ -314,12 +428,24 @@ class ActionExecutor:
     def _handle_clipboard_write(self, attrs: dict, text: str) -> str:
         content = attrs.get("文本", text)
         try:
-            import subprocess
-            subprocess.run(
-                ["powershell", "-Command", f"Set-Clipboard -Value '{content}'"],
-                capture_output=True, text=True, timeout=5,
-                shell=True
-            )
+            if sys.platform.startswith('darwin'):
+                subprocess.run(
+                    ["pbcopy"],
+                    input=content,
+                    capture_output=True, text=True, timeout=5
+                )
+            elif sys.platform.startswith('win32'):
+                subprocess.run(
+                    ["powershell", "-Command", f"Set-Clipboard -Value '{content}'"],
+                    capture_output=True, text=True, timeout=5,
+                    shell=True
+                )
+            else:
+                subprocess.run(
+                    ["xclip", "-selection", "clipboard"],
+                    input=content,
+                    capture_output=True, text=True, timeout=5
+                )
             return f"已写入剪贴板: {content[:100]}"
         except Exception as e:
             return f"写入剪贴板失败: {str(e)}"
@@ -356,7 +482,6 @@ class ActionExecutor:
     def _handle_run_command(self, attrs: dict, text: str) -> str:
         cmd = attrs.get("cmd", text)
         try:
-            import subprocess
             result = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=30,
                 shell=True, encoding="utf-8", errors="replace"
