@@ -7,7 +7,7 @@ import threading
 import re
 import xml.etree.ElementTree as ET
 from .llm import LLMClient
-from .executor import ActionExecutor
+from .executor import ActionExecutor, _xml_escape_attrs
 
 
 MAX_ITERATIONS = 8
@@ -157,6 +157,7 @@ class ApexAgent:
                 all_blocks.append(dict(blk))
                 if blk["type"] == "action" and blk["content"].strip():
                     act = blk["content"]
+                    print(f"[agent] 第{bi+1}条action原始内容: {repr(act[:200])}")
                     if not self._is_valid_action(act):
                         if on_chunk:
                             on_chunk("speaking",
@@ -198,13 +199,25 @@ class ApexAgent:
                 "messages": messages, "action": "", "exec_result": None, "blocks": []}
 
     def _is_valid_action(self, action: str) -> bool:
-        """校验 action 是否包含类XML指令标签（宽松匹配，兼容非标准属性格式如 key>value）"""
+        """校验 action 是否包含类XML指令标签（先标准化属性再解析）"""
         if not action or not action.strip():
             return True
+        # 先尝试直接XML解析
         try:
             ET.fromstring(f"<root>{action}</root>")
             return True
         except ET.ParseError:
-            # 严格XML解析失败 → 正则回退：检查是否有类XML标签对
-            tags = re.findall(r'</?[A-Za-z][A-Za-z0-9_()]*[^>]*>', action)
-            return len(tags) >= 2
+            pass
+        # 再尝试标准化属性后再解析（兼容 <OpenExe 程序路径>xxx 等非标准格式）
+        try:
+            normalized = _xml_escape_attrs(action)
+            ET.fromstring(f"<root>{normalized}</root>")
+            return True
+        except ET.ParseError:
+            pass
+        # 正则回退：至少有一个类XML标签
+        tags = re.findall(r'</?[A-Za-z][A-Za-z0-9_()]*[^>]*>', action)
+        if len(tags) >= 1:
+            return True
+        print(f"[_is_valid_action] 模型输出无法解析: {repr(action[:300])}")
+        return False
