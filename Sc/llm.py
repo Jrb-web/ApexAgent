@@ -69,19 +69,20 @@ SYSTEM_PROMPT = """# 角色介绍
 <action> </action>
 
 ## 【闭环多轮示例 — 核心能力】
-用户（macOS）：帮我检查电脑内存
+（以下为两轮对话。第一轮LLM发指令，系统收到后执行并把结果作为新消息发给LLM；第二轮LLM根据结果回复用户）
+第1轮（用户消息）: 帮我检查电脑内存
 <speaking>好的，我马上检查你的电脑内存使用情况。</speaking>
 <action><MemoryInfo/></action>
 
-[收到系统通知：内存信息: 总容量: 16.0 GB  已用: 10.2 GB  可用: 5.8 GB  使用率: 63.8%]
+第2轮（LLM收到系统注入的执行结果作为新消息: "内存信息: 总16GB 已用10.2GB 可用5.8GB 使用率64%"）:
 <speaking>检查完毕！你的电脑内存总共 16GB，当前已用 10.2GB，剩余可用 5.8GB，使用率约 64%，状态正常。</speaking>
 <action> </action>
 
-用户：帮我打开百度
+第1轮（用户消息）: 帮我打开百度
 <speaking>好的，我马上帮你打开百度网站。</speaking>
 <action><OpenURL 地址="">https://www.baidu.com</OpenURL></action>
 
-[收到系统通知：已在默认浏览器中打开: https://www.baidu.com]
+第2轮（LLM收到执行结果: "已在默认浏览器中打开: https://www.baidu.com"）:
 <speaking>百度已成功在浏览器中打开！</speaking>
 <action> </action>
 
@@ -90,8 +91,10 @@ SYSTEM_PROMPT = """# 角色介绍
 ❌ 错误2（指令写到speaking里）：<speaking>我执行了<OpenExe>xxx</speaking>
 ❌ 错误3（收到执行结果后只回"好的"）：<speaking>好的</speaking><action> </action>  ← 必须基于结果详细回复！
 ❌ 错误4（action留空但不写空格）：<action></action>
+❌ 错误5（自创不存在的指令）：<speaking>好的</speaking><action><Hearthstone 检查磁盘/></action> ← 该指令不在列表中！
+❌ 错误6（输出系统通知标记）：<speaking>[系统通知：已完成]...</speaking> ← 你绝对不能自己写系统通知！
 
-# 可用操作指令列表
+# 可用操作指令列表（严格只使用以下指令，不得自创任何新指令名）
 Windows 路径用 \\，macOS/Linux 路径用 /
 文件操作:
 - <ReadFile 路径="">C:\\test.txt</ReadFile>     macOS: <ReadFile 路径="">/Users/xxx/test.txt</ReadFile>
@@ -218,10 +221,15 @@ class StreamParser:
                         self._current[self._state] = ""
                         self._state = "idle"
                     else:
-                        # 开启标签：如果之前有 speaking 残余，先 flush
+                        # 开启标签
                         new_state = tag[1:-1]
                         if self._state == "idle" and self._idle_fallback.strip():
-                            self._blocks.append({"type": "speaking", "content": self._idle_fallback.strip()})
+                            if new_state == "speaking":
+                                # LLM在<speaking>前说了话 → 合并到speaking内容，避免重复
+                                self._current["speaking"] = self._idle_fallback.strip()
+                            else:
+                                # LLM在<action>前说了话 → 保留为独立speaking块
+                                self._blocks.append({"type": "speaking", "content": self._idle_fallback.strip()})
                             self._idle_fallback = ""
                         self._state = new_state
                         events.append(("block_start", self._state))

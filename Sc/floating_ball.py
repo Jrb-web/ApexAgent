@@ -1666,11 +1666,15 @@ class PanelWindow(QWidget):
                 if t and not t.startswith("⏳"):
                     thinking_text += t + "\n"
 
-        # 收集所有 action 块用于保存
+        # 收集所有 action 块用于保存（去重）
         action_blocks = []
+        seen_actions = set()
         for blk in result.get("blocks", []):
             if blk.get("type") == "action" and blk.get("content", "").strip():
-                action_blocks.append(blk["content"].strip())
+                c = blk["content"].strip()
+                if c not in seen_actions:
+                    seen_actions.add(c)
+                    action_blocks.append(c)
 
         conv = ConversationStore.load(self._conv_id)
         if conv:

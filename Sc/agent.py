@@ -133,6 +133,9 @@ class ApexAgent:
                     chunk_data["speaking"] = chunk.get("speaking", "")
                     chunk_data["action"] = chunk.get("action", "")
                     chunk_data["blocks"] = chunk.get("blocks", [])
+                    # parser 已有完整 blocks，清除 _block 避免 flush 追加重复
+                    chunk_data["_block"] = None
+                    chunk_data["_block_content"] = ""
 
             # flush 最后一个块
             if chunk_data["_block"] and chunk_data["_block_content"].strip():
@@ -162,8 +165,15 @@ class ApexAgent:
             # 如果没有 action 相关块 → 任务结束
             has_action = any(b["type"] == "action" and b["content"].strip() for b in blocks)
             if not has_action:
-                # 从所有 speaking block 拼出最终文本（不盲累积，避免跨轮重复）
-                speaking_parts = [b["content"] for b in all_blocks if b["type"] == "speaking" and b["content"].strip()]
+                # 从所有 speaking block 拼出最终文本，去重：相同内容只取一次
+                seen = set()
+                speaking_parts = []
+                for b in all_blocks:
+                    if b["type"] == "speaking" and b["content"].strip():
+                        c = b["content"].strip()
+                        if c not in seen:
+                            seen.add(c)
+                            speaking_parts.append(c)
                 all_speaking = "\n".join(speaking_parts)
                 messages.append({"role": "assistant",
                                  "content": speaking or thinking or "任务已完成。"})
