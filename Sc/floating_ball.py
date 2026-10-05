@@ -1690,25 +1690,34 @@ class PanelWindow(QWidget):
 
     def _show_planning(self):
         """显示'正在规划下一步'微光提示"""
-        self._planning_label.show()
-        self._planning_shimmer = 0.0
-        if not self._planning_timer.isActive():
-            self._planning_timer.start(40)
+        try:
+            self._planning_label.show()
+            self._planning_shimmer = 0.0
+            if not self._planning_timer.isActive():
+                self._planning_timer.start(40)
+        except RuntimeError:
+            pass
 
     def _hide_planning(self):
         """隐藏规划提示"""
-        self._planning_timer.stop()
-        self._planning_label.hide()
+        try:
+            self._planning_timer.stop()
+            self._planning_label.hide()
+        except RuntimeError:
+            pass
 
     def _planning_shimmer_tick(self):
         """微光动画：文字亮度波动"""
-        self._planning_shimmer = (self._planning_shimmer + 0.04) % 1.0
-        import math
-        alpha = 0.4 + 0.6 * math.sin(self._planning_shimmer * math.pi * 2)
-        alpha = max(0.25, alpha)
-        r, g, b = 142, 160, 200
-        self._planning_label.setStyleSheet(
-            f"QLabel {{ color: rgba({r},{g},{b},{int(alpha*255)}); background: transparent; padding: 2px 8px; }}")
+        try:
+            self._planning_shimmer = (self._planning_shimmer + 0.04) % 1.0
+            import math
+            alpha = 0.4 + 0.6 * math.sin(self._planning_shimmer * math.pi * 2)
+            alpha = max(0.25, alpha)
+            r, g, b = 142, 160, 200
+            self._planning_label.setStyleSheet(
+                f"QLabel {{ color: rgba({r},{g},{b},{int(alpha*255)}); background: transparent; padding: 2px 8px; }}")
+        except RuntimeError:
+            self._planning_timer.stop()
 
     def _scroll_to_bottom(self):
         sb = self._scroll.verticalScrollBar()
