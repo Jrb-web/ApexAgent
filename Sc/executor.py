@@ -444,6 +444,75 @@ class ActionExecutor:
         except Exception as e:
             return f"获取系统信息失败: {str(e)}"
 
+    def _handle_memory_info(self, attrs: dict, text: str) -> str:
+        try:
+            try:
+                import psutil
+                mem = psutil.virtual_memory()
+                swap = psutil.swap_memory()
+                return (
+                    f"内存信息:\n"
+                    f"  总容量: {self._format_size(mem.total)}\n"
+                    f"  已用: {self._format_size(mem.used)}\n"
+                    f"  可用: {self._format_size(mem.available)}\n"
+                    f"  使用率: {mem.percent}%\n"
+                    f"  Swap 总量: {self._format_size(swap.total)}\n"
+                    f"  Swap 已用: {self._format_size(swap.used)}"
+                )
+            except ImportError:
+                pass
+            if sys.platform.startswith('win32'):
+                result = subprocess.run(
+                    ["wmic", "OS", "get", "TotalVisibleMemorySize,FreePhysicalMemory,FreeVirtualMemory", "/Value"],
+                    capture_output=True, text=True, timeout=15
+                )
+                return f"内存信息:\n{result.stdout.strip()}" if result.stdout.strip() else "无法获取内存信息"
+            elif sys.platform == "darwin":
+                result = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=10)
+                pages_free = pages_active = pages_wired = pages_compressed = pages_inactive = 0
+                for line in result.stdout.splitlines():
+                    stripped = line.split(":")[-1].strip().rstrip(".")
+                    val = int(stripped) if stripped.isdigit() else 0
+                    low = line.lower()
+                    if "free" in low and "page" not in low:
+                        pages_free = val
+                    elif "active:" in low:
+                        pages_active = val
+                    elif "wired down" in low:
+                        pages_wired = val
+                    elif "compressor" in low or "compressed" in low:
+                        pages_compressed = val
+                    elif "inactive" in low:
+                        pages_inactive = val
+                page_size = 16384
+                used = (pages_active + pages_wired + pages_compressed) * page_size
+                free = (pages_free + pages_inactive) * page_size
+                total = used + free
+                return (
+                    f"内存信息 (vm_stat):\n"
+                    f"  总容量（估算）: {self._format_size(total)}\n"
+                    f"  已用: {self._format_size(used)}\n"
+                    f"  可用: {self._format_size(free)}"
+                )
+            else:
+                result = subprocess.run(["free", "-h"], capture_output=True, text=True, timeout=10)
+                return f"内存信息:\n{result.stdout.strip()}" if result.stdout.strip() else "无法获取内存信息"
+        except Exception as e:
+            return f"获取内存信息失败: {str(e)}"
+
+    def _handle_open_url(self, attrs: dict, text: str) -> str:
+        url = _get_attr_or_text(attrs, "地址", text)
+        try:
+            if sys.platform.startswith('win32'):
+                subprocess.run(["cmd", "/c", "start", "", url], timeout=10)
+            elif sys.platform == "darwin":
+                subprocess.run(["open", url], timeout=10)
+            else:
+                subprocess.run(["xdg-open", url], timeout=10)
+            return f"已在默认浏览器中打开: {url}"
+        except Exception as e:
+            return f"打开URL失败: {str(e)}"
+
     def _handle_get_process_list(self, attrs: dict, text: str) -> str:
         return self._handle_read_running(attrs, text)
 
@@ -766,6 +835,9 @@ class ActionExecutor:
         "RegistryWrite": _handle_registry_write,
         "ServiceControl": _handle_service_control,
         "RunCommand": _handle_run_command,
+        # 内存 / 网页
+        "MemoryInfo": _handle_memory_info,
+        "OpenURL": _handle_open_url,
         # 循环逻辑
         "while": _handle_while,
         "for": _handle_for,
