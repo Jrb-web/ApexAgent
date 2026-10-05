@@ -7,6 +7,7 @@ import sys
 import os
 import json
 import queue
+import platform
 from datetime import datetime
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QMenu, QVBoxLayout, QHBoxLayout,
@@ -1030,6 +1031,10 @@ class PanelWindow(QWidget):
 
         self._add_message(text, is_user=True)
 
+        # 自动附加系统信息
+        sys_info = f"[系统信息] 操作系统: {platform.system()} {platform.release()}，架构: {platform.machine()}，主机名: {platform.node()}"
+        user_msg_with_ctx = f"{sys_info}\n\n{text}"
+
         # 创建双气泡：thinking 灰色小字 + speaking 白色大字（立刻显示等待提示）
         self._thinking_bubble = self._add_stream_bubble("⏳ 思考中...", is_thinking=True)
         self._speaking_bubble = self._add_stream_bubble("⏳ 等待回复...", is_thinking=False)
@@ -1052,7 +1057,7 @@ class PanelWindow(QWidget):
 
         # 异步 Agent — 子线程把 chunk 推入 queue
         self._agent.run_async(
-            user_message=text,
+            user_message=user_msg_with_ctx,
             conversation_messages=context_messages,
             on_chunk=self._push_chunk,
             on_complete=self._push_complete,

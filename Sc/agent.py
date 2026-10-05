@@ -4,6 +4,7 @@ ApexAgent 闭环推理引擎 — 思考 → 说话 → 行动 → 循环
 """
 
 import threading
+import re
 import xml.etree.ElementTree as ET
 from .llm import LLMClient
 from .executor import ActionExecutor
@@ -123,22 +124,31 @@ class ApexAgent:
             exec_result = self._executor.execute(action)
             if not exec_result["success"]:
                 # 执行失败也结束，不继续循环（防止连锁污染）
-                if on_chunk:
-                    on_chunk("speaking",
-                             f"\n\n❌ 指令执行失败: {exec_result.get('error', '未知错误')}\n")
+                # 不推送原始错误到 speaking，action 卡片会显示失败状态
                 return {"thinking": all_thinking, "speaking": all_speaking,
                         "success": False,
                         "error": f"指令执行失败: {exec_result.get('error', '')}",
                         "messages": messages,
                         "action": action, "exec_result": exec_result}
 
-            result_text = (
-                f"[系统通知] 你上一条指令已执行完毕。以下是执行结果，请根据结果决定下一步：\n"
-                f"{exec_result}"
-            )
-            if on_chunk:
-                on_chunk("speaking", f"\n\n🔧 执行指令...\n{exec_result}\n")
+            # 仅发送干净的摘要给模型，不包含原始字典
+            results = exec_result.get("results", [])
+            if results:
+                outputs = []
+                for r in results:
+                    if isinstance(r, dict):
+                        inst = r.get("instruction", "")
+                        out = r.get("output", "")
+                        outputs.append(f"[{inst}]: {out}")
+                    else:
+                        outputs.append(str(r))
+                clean_summary = "\n".join(outputs)
+            else:
+                clean_summary = "（无文本输出）"
 
+            result_text = (
+                f"[系统通知] 你的上一条指令已执行完毕，结果：\n{clean_summary}"
+            )
             messages.append({"role": "user", "content": result_text})
 
         # 超过最大轮次
@@ -147,11 +157,13 @@ class ApexAgent:
                 "messages": messages, "action": "", "exec_result": None}
 
     def _is_valid_action(self, action: str) -> bool:
-        """校验 action 是否为有效 XML 格式"""
+        """校验 action 是否包含类XML指令标签（宽松匹配，兼容非标准属性格式如 key>value）"""
         if not action or not action.strip():
             return True
         try:
             ET.fromstring(f"<root>{action}</root>")
             return True
         except ET.ParseError:
-            return False
+            # 严格XML解析失败 → 正则回退：检查是否有类XML标签对
+            tags = re.findall(r'</?[A-Za-z][A-Za-z0-9_()]*[^>]*>', action)
+            return len(tags) >= 2

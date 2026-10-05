@@ -11,4 +11,3 @@ venv/
 *.log
 .DS_Store
 Thumbs.db
-ini/
