@@ -537,10 +537,34 @@ _THINKING_TAG_RE = re.compile(
     re.IGNORECASE,
 )
 
+# 命令小框 → QLabel 用 HTML span 渲染
+_CMD_PILL_HTML = (
+    '<span style="'
+    'display:inline-block;'
+    'background:#2d3440;'
+    'color:#88c0d0;'
+    'border:1.5px solid #5e81ac;'
+    'border-radius:4px;'
+    'padding:0 6px;'
+    'margin:0 2px;'
+    'font-size:11px;'
+    'font-weight:bold;'
+    'line-height:1.4;'
+    '">'
+    '⚡命令'
+    '</span>'
+)
+
 
 def _filter_thinking_tags(text: str) -> str:
-    """把思考中的XML标签替换为小框框 [命令]"""
-    return _THINKING_TAG_RE.sub('·', text)
+    """把思考中的XML标签整体替换为⚡命令小框（安全转义）"""
+    # 先用标记位替换 XML 标签
+    text = _THINKING_TAG_RE.sub('\x00CMD\x00', text)
+    # 转义残余的 < >
+    text = text.replace('<', '&lt;').replace('>', '&gt;')
+    # 恢复标记位为 HTML pill
+    text = text.replace('\x00CMD\x00', _CMD_PILL_HTML)
+    return text
 
 
 class CollapsibleThinkingBubble(QWidget):
@@ -597,6 +621,7 @@ class CollapsibleThinkingBubble(QWidget):
         self._content = QLabel(self._full_text)
         self._content.setWordWrap(True)
         self._content.setFont(QFont("Microsoft YaHei", 9))
+        self._content.setTextFormat(Qt.TextFormat.RichText)
         self._content.setStyleSheet("""
             QLabel {
                 background-color: rgba(60, 60, 80, 100);
