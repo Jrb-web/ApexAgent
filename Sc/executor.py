@@ -203,14 +203,57 @@ class ActionExecutor:
 
     def _handle_name_change(self, attrs: dict, text: str) -> str:
         path = _get_attr_or_text(attrs, "路径", text)
+        new_name = (attrs.get("新名称", "") or attrs.get("newname", "") or "").strip()
+        if not new_name:
+            return "请提供新名称（属性: 新名称）"
         if not os.path.exists(path):
             return f"路径不存在: {path}"
-        # 新名称通常在 text 中
-        return f"重命名功能: 暂未实现完整逻辑 ({path})"
+        try:
+            dir_path = os.path.dirname(path)
+            new_path = os.path.join(dir_path, new_name)
+            os.rename(path, new_path)
+            return f"已重命名: {path} → {new_path}"
+        except Exception as e:
+            return f"重命名失败: {str(e)}"
 
     def _handle_diff_json_file(self, attrs: dict, text: str) -> str:
+        import json
         path = _get_attr_or_text(attrs, "路径", text)
-        return f"JSON修改功能: 暂未实现 ({path})"
+        if not os.path.exists(path):
+            return f"文件不存在: {path}"
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            changes_raw = (attrs.get("修改", "") or attrs.get("changes", "") or "").strip()
+            if changes_raw:
+                try:
+                    changes = json.loads(changes_raw)
+                except json.JSONDecodeError:
+                    return f"修改内容不是合法JSON: {changes_raw[:200]}"
+                self._deep_update(data, changes)
+            elif text.strip():
+                try:
+                    changes = json.loads(text.strip())
+                    self._deep_update(data, changes)
+                except json.JSONDecodeError:
+                    return f"标签文本不是合法JSON: {text[:200]}"
+            else:
+                return f"请提供修改内容（属性: 修改 或标签文本）"
+
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            return f"已修改JSON文件: {path}（共{len(changes)}个字段）"
+        except Exception as e:
+            return f"修改JSON失败: {str(e)}"
+
+    @staticmethod
+    def _deep_update(target: dict, source: dict):
+        """递归合并字典"""
+        for k, v in source.items():
+            if isinstance(v, dict) and isinstance(target.get(k), dict):
+                ActionExecutor._deep_update(target[k], v)
+            else:
+                target[k] = v
 
     # ================================================================
     #  程序进程控制 API
@@ -350,7 +393,28 @@ class ActionExecutor:
             return f"获取桌面文件失败: {str(e)}"
 
     def _handle_get_active_window(self, attrs: dict, text: str) -> str:
-        return "获取活动窗口: 暂未实现（需要Windows API）"
+        try:
+            if sys.platform.startswith("darwin"):
+                r = subprocess.run([
+                    "osascript", "-e",
+                    'tell application "System Events" to get {name,title} of first process whose frontmost is true'
+                ], capture_output=True, text=True, timeout=5)
+                return f"活动窗口: {r.stdout.strip().replace(', ', ' — ')}"
+            elif sys.platform.startswith("win32"):
+                r = subprocess.run([
+                    "powershell", "-Command",
+                    '(Get-Process | Where-Object {$_.MainWindowTitle -ne ""} | '
+                    'Select-Object -First 1).MainWindowTitle'
+                ], capture_output=True, text=True, timeout=5)
+                return f"活动窗口: {r.stdout.strip()}" if r.stdout.strip() else "未检测到活动窗口"
+            else:
+                r = subprocess.run(
+                    ["xdotool", "getactivewindow", "getwindowname"],
+                    capture_output=True, text=True, timeout=5
+                )
+                return f"活动窗口: {r.stdout.strip()}"
+        except Exception as e:
+            return f"获取活动窗口失败: {str(e)}"
 
     def _handle_get_disk_usage(self, attrs: dict, text: str) -> str:
         path = _get_attr_or_text(attrs, "路径", text)
@@ -406,14 +470,82 @@ class ActionExecutor:
 
     def _handle_close_window(self, attrs: dict, text: str) -> str:
         title = _get_attr_or_text(attrs, "窗口标题", text)
-        return f"关闭窗口 '{title}': 暂未实现（需要Windows API）"
+        try:
+            if sys.platform.startswith("darwin"):
+                r = subprocess.run([
+                    "osascript", "-e",
+                    f'tell application "System Events" to quit process "{title}"'
+                ], capture_output=True, text=True, timeout=10)
+                if r.returncode == 0:
+                    return f"已关闭窗口: {title}"
+                return f"关闭失败 ({title}): {r.stderr.strip()}"
+            elif sys.platform.startswith("win32"):
+                subprocess.run(
+                    ["taskkill", "/F", "/FI", f"WINDOWTITLE eq {title}"],
+                    capture_output=True, text=True, timeout=10
+                )
+                return f"已关闭窗口: {title}"
+            else:
+                subprocess.run(
+                    ["wmctrl", "-c", title],
+                    capture_output=True, text=True, timeout=10
+                )
+                return f"已关闭窗口: {title}"
+        except Exception as e:
+            return f"关闭窗口失败: {str(e)}"
 
     def _handle_resize_window(self, attrs: dict, text: str) -> str:
-        return "调整窗口大小: 暂未实现（需要Windows API）"
+        w = attrs.get("宽", attrs.get("width", "800"))
+        h = attrs.get("高", attrs.get("height", "600"))
+        title = _get_attr_or_text(attrs, "窗口标题", text)
+        try:
+            if sys.platform.startswith("darwin"):
+                script = (
+                    f'tell application "System Events"\n'
+                    f'  if exists process "{title}" then\n'
+                    f'    set position of window 1 of process "{title}" to {{0, 0}}\n'
+                    f'    set size of window 1 of process "{title}" to {{{w}, {h}}}\n'
+                    f'  end if\n'
+                    f'end tell'
+                )
+                subprocess.run(["osascript", "-e", script],
+                               capture_output=True, text=True, timeout=10)
+                return f"已调整窗口 {title} 大小为 {w}x{h}"
+            elif sys.platform.startswith("win32"):
+                return f"调整窗口大小: Windows 暂用系统API受限，请用RunCommand"
+            else:
+                subprocess.run(
+                    ["wmctrl", "-r", title, "-e", f"0,-1,-1,{w},{h}"],
+                    capture_output=True, text=True, timeout=10
+                )
+                return f"已调整窗口大小: {w}x{h}"
+        except Exception as e:
+            return f"调整窗口大小失败: {str(e)}"
 
     def _handle_focus_window(self, attrs: dict, text: str) -> str:
         title = _get_attr_or_text(attrs, "标题", text)
-        return f"置顶窗口 '{title}': 暂未实现（需要Windows API）"
+        try:
+            if sys.platform.startswith("darwin"):
+                subprocess.run(
+                    ["osascript", "-e", f'tell application "{title}" to activate'],
+                    capture_output=True, text=True, timeout=10
+                )
+                return f"已激活窗口: {title}"
+            elif sys.platform.startswith("win32"):
+                subprocess.run(
+                    ["powershell", "-Command",
+                     f'(New-Object -ComObject WScript.Shell).AppActivate("{title}")'],
+                    capture_output=True, text=True, timeout=10
+                )
+                return f"已激活窗口: {title}"
+            else:
+                subprocess.run(
+                    ["wmctrl", "-a", title],
+                    capture_output=True, text=True, timeout=10
+                )
+                return f"已激活窗口: {title}"
+        except Exception as e:
+            return f"激活窗口失败: {str(e)}"
 
     # ================================================================
     #  剪贴板 API
@@ -488,13 +620,73 @@ class ActionExecutor:
     # ================================================================
 
     def _handle_registry_read(self, attrs: dict, text: str) -> str:
-        return "注册表读取: 暂未实现"
+        if not sys.platform.startswith("win32"):
+            return "注册表操作仅支持 Windows 系统"
+        key = _get_attr_or_text(attrs, "注册表路径", text)
+        try:
+            r = subprocess.run(
+                ["reg", "query", key],
+                capture_output=True, text=True, timeout=10
+            )
+            if r.returncode == 0:
+                return r.stdout.strip()
+            return f"读取失败: {r.stderr.strip()}"
+        except Exception as e:
+            return f"注册表读取失败: {str(e)}"
 
     def _handle_registry_write(self, attrs: dict, text: str) -> str:
-        return "注册表写入: 暂未实现"
+        if not sys.platform.startswith("win32"):
+            return "注册表操作仅支持 Windows 系统"
+        key = _get_attr_or_text(attrs, "注册表路径", text)
+        vn = attrs.get("键名", attrs.get("name", "")).strip()
+        vv = attrs.get("键值", attrs.get("value", "")).strip()
+        if not vn:
+            return "请提供键名（属性: 键名）"
+        try:
+            subprocess.run(
+                ["reg", "add", key, "/v", vn, "/d", vv, "/f"],
+                capture_output=True, text=True, timeout=10
+            )
+            return f"已写入注册表: {key}\\{vn} = {vv}"
+        except Exception as e:
+            return f"注册表写入失败: {str(e)}"
 
     def _handle_service_control(self, attrs: dict, text: str) -> str:
-        return "服务控制: 暂未实现"
+        name = _get_attr_or_text(attrs, "服务名", text)
+        action = attrs.get("操作", attrs.get("action", "status")).strip().lower()
+        try:
+            if sys.platform.startswith("darwin"):
+                if action in ("start", "load"):
+                    subprocess.run(
+                        ["sudo", "launchctl", "load", "-w",
+                         f"/Library/LaunchDaemons/{name}.plist"],
+                        capture_output=True, text=True, timeout=15)
+                    return f"已启动服务: {name}"
+                elif action in ("stop", "unload"):
+                    subprocess.run(
+                        ["sudo", "launchctl", "unload",
+                         f"/Library/LaunchDaemons/{name}.plist"],
+                        capture_output=True, text=True, timeout=15)
+                    return f"已停止服务: {name}"
+                else:
+                    r = subprocess.run(
+                        ["sudo", "launchctl", "list", name],
+                        capture_output=True, text=True, timeout=10)
+                    return r.stdout.strip() or f"服务 {name} 状态未知"
+            elif sys.platform.startswith("linux"):
+                r = subprocess.run(
+                    ["systemctl", action, name],
+                    capture_output=True, text=True, timeout=15)
+                return r.stdout.strip()
+            elif sys.platform.startswith("win32"):
+                act_map = {"start": "start", "stop": "stop", "restart": "restart",
+                           "status": "query", "query": "query"}
+                r = subprocess.run(
+                    ["sc", act_map.get(action, "query"), name],
+                    capture_output=True, text=True, timeout=15)
+                return r.stdout.strip()
+        except Exception as e:
+            return f"服务控制失败: {str(e)}"
 
     def _handle_run_command(self, attrs: dict, text: str) -> str:
         cmd = _get_attr_or_text(attrs, "cmd", text)
@@ -515,13 +707,13 @@ class ActionExecutor:
     # ================================================================
 
     def _handle_while(self, attrs: dict, text: str) -> str:
-        return "while循环: 暂未实现"
+        return "while 循环：Agent 推理引擎已内置循环与终止逻辑，请直接用 RunCommand 执行 shell 循环"
 
     def _handle_for(self, attrs: dict, text: str) -> str:
-        return "for循环: 暂未实现"
+        return "for 循环：Agent 推理引擎已内置循环与终止逻辑，请直接用 RunCommand 执行 shell 循环"
 
     def _handle_if(self, attrs: dict, text: str) -> str:
-        return "If条件: 暂未实现"
+        return "If 条件：Agent 推理引擎已内置条件判断逻辑，请直接用 RunCommand 执行 shell 条件"
 
     # ================================================================
     #  工具方法

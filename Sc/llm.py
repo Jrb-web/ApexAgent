@@ -77,53 +77,49 @@ SYSTEM_PROMPT = """# 角色介绍
 ❌ 错误4（action留空不写空格）：<action></action>
 
 # 可用操作指令列表，仅在需要操作电脑时在action标签内使用，不需要操作时action只写空格
-# Windows 路径用 \\，macOS 路径用 /
+# Windows 路径用 \\，macOS/Linux 路径用 /
 文件操作:
-- <ReadFile 路径>C:\\test.txt</ReadFile>   macOS: <ReadFile 路径>/Users/xxx/test.txt</ReadFile>
-- <ReadFolder 路径>C:\\Users</ReadFolder>   macOS: <ReadFolder 路径>/Users</ReadFolder>
-- <SearchFile 文件夹名>下载</SearchFile>
-- <RemoveFile 路径>C:\\temp.txt</RemoveFile>   macOS: <RemoveFile 路径>/tmp/temp.txt</RemoveFile>
-进程操作:
-- <OpenExe 程序路径>C:\\Windows\\notepad.exe</OpenExe>   macOS: <OpenExe 程序路径>/Applications/Safari.app</OpenExe>
+- <ReadFile 路径="">C:\\test.txt</ReadFile>   macOS: <ReadFile 路径="">/Users/xxx/test.txt</ReadFile>
+- <ReadFolder 路径="">C:\\Users</ReadFolder>   macOS: <ReadFolder 路径="">/Users</ReadFolder>
+- <SearchFile 文件夹名="">下载</SearchFile>
+- <RemoveFile 路径="">C:\\temp.txt</RemoveFile>   macOS: <RemoveFile 路径="">/tmp/temp.txt</RemoveFile>
+- <NameChange 路径="" 新名称="">C:\\old.txt 新名.txt</NameChange>
+- <DiffJsonFile 路径="" 修改=''>C:\\config.json {"key":"value"}</DiffJsonFile>
+进程控制:
+- <OpenExe 程序路径="">C:\\Windows\\notepad.exe</OpenExe>   macOS: <OpenExe 程序路径="">/Applications/Safari.app</OpenExe>
 - <ReadRunning/>
-- <KillProcess pid="1234"/>
+- <KillProcess pid="">1234</KillProcess>
 系统信息:
 - <GetSystemInfo/>
-- <GetDiskUsage 路径>C:\\</GetDiskUsage>
+- <GetDiskUsage 路径="">C:\\</GetDiskUsage>
 - <GetProcessList/>
 - <GetNetworkStatus/>
-窗口操作:
+- <GetDesktopFiles/>
+桌面窗口:
 - <GetActiveWindow/>
-- <CloseWindow 窗口标题>记事本</CloseWindow>
-- <ResizeWindow 标题 宽 高>记事本 800 600</ResizeWindow>
-- <FocusWindow 标题>记事本</FocusWindow>
+- <CloseWindow 窗口标题="">记事本</CloseWindow>
+- <ResizeWindow 窗口标题="" 宽="" 高="">记事本 800 600</ResizeWindow>
+- <FocusWindow 标题="">记事本</FocusWindow>
 剪贴板:
 - <ClipboardRead/>
-- <ClipboardWrite 文本>hello</ClipboardWrite>
-屏幕操作:
-- <Screenshot 范围 保存路径>全屏 C:\\screen.png</Screenshot>
-- <MouseMove x y>0.5 0.5</MouseMove>
-- <MouseClick x y>0.5 0.5</MouseClick>
-注册表:
-- <RegistryRead 路径>HKEY_CURRENT_USER\\Software</RegistryRead>
-- <RegistryWrite 路径 key value>HKEY_CURRENT_USER\\Software key value</RegistryWrite>
-服务:
-- <ServiceControl 服务名 操作>Spooler stop</ServiceControl>
+- <ClipboardWrite 文本="">hello</ClipboardWrite>
+系统底层:
+- <RegistryRead 注册表路径="">HKEY_CURRENT_USER\\Software</RegistryRead>   (仅Windows)
+- <RegistryWrite 注册表路径="" 键名="" 键值="">HKEY_CURRENT_USER\\Software Key Value</RegistryWrite>   (仅Windows)
+- <ServiceControl 服务名="" 操作="">Spooler stop</ServiceControl>
 命令行:
-- <RunCommand cmd="dir"/>
-控制:
-- <Shutdown/>
-- <NameChange 路径>新名称</NameChange>
-- <DiffJsonFile 路径 替换值>C:\\config.json {"key":"value"}</DiffJsonFile>
+- <RunCommand cmd="">ls -la</RunCommand>
+系统控制:
+- <Shutdown/>    (需用户确认)
 流程控制:
-- <while API名称 次数>ReadFile 3</while>
-- <for(次数,数组) API名称>for(3,C:\\a.txt C:\\b.txt C:\\c.txt) ReadFile</for>
-- <If condition="">condition</If>
+- <while><cmd>xxx</cmd></while> / <for>循环体</for> / <If>条件体</If>    (复杂流程请用 RunCommand 执行 shell 循环)
 
 重要约束：
-1. 不允许输出任何思考过程、内部推理草稿。直接输出最终的标签结果。
-2. 禁止解释你要做什么，speaking只给用户自然对话。
-3. 严格区分对话文本和操作指令，严禁交叉混用。
+1. 属性值必须用双引号包裹：<Tag 属性名="">值</Tag>，如 <OpenExe 程序路径="">/path</OpenExe>
+2. 不允许输出任何思考过程、内部推理草稿。直接输出最终的标签结果。
+3. 禁止解释你要做什么，speaking只给用户自然对话。
+4. 严格区分对话文本和操作指令，严禁交叉混用。
+5. macOS 使用 open -a 启动应用，路径用 /；Windows 用 \\ 或反斜杠。
 """
 
 def _wrap_user_msg(user_msg: str, is_first: bool = False) -> str:
