@@ -79,14 +79,15 @@ class ApexAgent:
         if user_message:
             messages.append({"role": "user", "content": user_message})
         all_thinking = ""
-        all_speaking = ""
         all_blocks = []         # 跨轮次累积所有块
         all_exec_results = []   # 跨轮次累积所有执行结果
         last_action = ""        # 最后一轮 action 字符串
 
         for iteration in range(MAX_ITERATIONS):
             if self._stop_event.is_set():
-                return {"thinking": all_thinking, "speaking": all_speaking,
+                speaking_parts = [b["content"] for b in all_blocks if b["type"] == "speaking" and b["content"].strip()]
+                return {"thinking": all_thinking,
+                        "speaking": "\n".join(speaking_parts) or "用户手动停止",
                         "success": False, "error": "用户手动停止",
                         "messages": messages, "action": last_action,
                         "exec_result": all_exec_results, "blocks": all_blocks}
@@ -139,7 +140,7 @@ class ApexAgent:
                     {"type": chunk_data["_block"], "content": chunk_data["_block_content"].strip()})
 
             if chunk_data["error"]:
-                return {"thinking": all_thinking, "speaking": all_speaking,
+                return {"thinking": all_thinking, "speaking": "",
                         "success": False, "error": chunk_data["error"],
                         "messages": messages, "blocks": all_blocks,
                         "action": last_action, "exec_result": all_exec_results}
@@ -151,8 +152,6 @@ class ApexAgent:
 
             if thinking:
                 all_thinking += thinking + "\n"
-            if speaking:
-                all_speaking += speaking + "\n"
             if action:
                 last_action = action
 
@@ -163,6 +162,9 @@ class ApexAgent:
             # 如果没有 action 相关块 → 任务结束
             has_action = any(b["type"] == "action" and b["content"].strip() for b in blocks)
             if not has_action:
+                # 从所有 speaking block 拼出最终文本（不盲累积，避免跨轮重复）
+                speaking_parts = [b["content"] for b in all_blocks if b["type"] == "speaking" and b["content"].strip()]
+                all_speaking = "\n".join(speaking_parts)
                 messages.append({"role": "assistant",
                                  "content": speaking or thinking or "任务已完成。"})
                 return {"thinking": all_thinking, "speaking": all_speaking,
@@ -170,10 +172,14 @@ class ApexAgent:
                         "action": last_action, "exec_result": all_exec_results,
                         "blocks": all_blocks}
 
-            # 顺序执行本轮 blocks 中的 action
+            # 顺序执行本轮 blocks 中的 action（去重：相同指令只执行一次）
+            seen_actions = set()
             for bi, blk in enumerate(blocks):
                 if blk["type"] == "action" and blk["content"].strip():
                     act = blk["content"]
+                    if act in seen_actions:
+                        continue
+                    seen_actions.add(act)
                     print(f"[agent] 轮次{iteration+1} 第{bi+1}条action: {repr(act[:200])}")
                     if not self._is_valid_action(act):
                         if on_chunk:
@@ -210,7 +216,8 @@ class ApexAgent:
 
             # continue → 下一轮 LLM 调用，messages 含执行结果
 
-        return {"thinking": all_thinking, "speaking": all_speaking,
+        return {"thinking": all_thinking,
+                "speaking": "\n".join(b["content"] for b in all_blocks if b["type"] == "speaking" and b["content"].strip()),
                 "success": False, "error": f"推理轮次超过上限({MAX_ITERATIONS})",
                 "messages": messages, "action": last_action,
                 "exec_result": all_exec_results, "blocks": all_blocks}

@@ -1342,7 +1342,11 @@ class PanelWindow(QWidget):
 
         # 构建对话上下文（历史消息含时间戳）
         context_messages = []
-        for msg in conv.get("messages", []):
+        all_msgs = conv.get("messages", [])
+        # 排除当前用户消息（它会通过 user_message 参数单独传给 agent，避免重复）
+        if all_msgs and all_msgs[-1]["role"] == "user":
+            all_msgs = all_msgs[:-1]
+        for msg in all_msgs:
             if msg["role"] in ("user", "assistant"):
                 ctx_msg = {"role": msg["role"], "content": msg["content"]}
                 if msg["role"] == "user":
