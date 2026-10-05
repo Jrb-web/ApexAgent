@@ -74,6 +74,9 @@ class ApexAgent:
 
     def _agent_loop(self, user_message, conv_msgs, on_chunk):
         messages = list(conv_msgs) if conv_msgs else []
+        # 把当前用户消息（含系统信息）加入消息列表
+        if user_message:
+            messages.append({"role": "user", "content": user_message})
         all_thinking = ""
         all_speaking = ""
 

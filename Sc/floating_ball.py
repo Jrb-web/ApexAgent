@@ -1313,17 +1313,32 @@ class PanelWindow(QWidget):
         self._add_message(text, is_user=True)
 
         # 自动附加系统信息
-        sys_info = f"[系统信息] 操作系统: {platform.system()} {platform.release()}，架构: {platform.machine()}，主机名: {platform.node()}"
+        now = datetime.now()
+        sys_info = f"[系统信息] 时间: {now.strftime('%Y-%m-%d %H:%M')}, 操作系统: {platform.system()} {platform.release()}, 架构: {platform.machine()}, 主机名: {platform.node()}"
         user_msg_with_ctx = f"{sys_info}\n\n{text}"
 
         # 显示停止按钮
         self._stop_btn.show()
 
-        # 构建对话上下文
+        # 构建对话上下文（历史消息含时间戳）
         context_messages = []
         for msg in conv.get("messages", []):
             if msg["role"] in ("user", "assistant"):
                 ctx_msg = {"role": msg["role"], "content": msg["content"]}
+                if msg["role"] == "user":
+                    ts = msg.get("timestamp", "")
+                    time_str = ""
+                    if ts:
+                        try:
+                            dt = datetime.fromisoformat(ts)
+                            time_str = f", 时间: {dt.strftime('%Y-%m-%d %H:%M')}"
+                        except:
+                            pass
+                    ctx_msg["content"] = (
+                        f"[系统信息] 操作系统: {platform.system()} {platform.release()}, "
+                        f"架构: {platform.machine()}, 主机名: {platform.node()}{time_str}\n\n"
+                        f"{msg['content']}"
+                    )
                 context_messages.append(ctx_msg)
 
         # 重置队列状态（线程安全）
