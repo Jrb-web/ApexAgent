@@ -1142,6 +1142,25 @@ class PanelWindow(QWidget):
         self._hint_label.setGraphicsEffect(self._hint_opacity)
 
         self._msg_layout.addWidget(self._hint_label)
+
+        # ---- 规划提示（闭环多轮调用时闪现） ----
+        self._planning_label = QLabel("正在规划下一步...")
+        self._planning_label.setFont(QFont("Microsoft YaHei", 9))
+        self._planning_label.setStyleSheet("""
+            QLabel {
+                color: #8ea0c8;
+                background: transparent;
+                padding: 2px 8px;
+            }
+        """)
+        self._planning_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._planning_label.setWordWrap(True)
+        self._planning_label.hide()
+        self._planning_shimmer = 0.0
+        self._planning_timer = QTimer()
+        self._planning_timer.timeout.connect(self._planning_shimmer_tick)
+
+        self._msg_layout.addWidget(self._planning_label)
         self._msg_layout.addStretch()
 
         self._scroll.setWidget(self._msg_container)
@@ -1342,6 +1361,7 @@ class PanelWindow(QWidget):
                 context_messages.append(ctx_msg)
 
         # 重置队列状态（线程安全）
+        self._hide_planning()
         self._chunk_queue = queue.Queue()
         self._tw_buffer = ""
         self._tw_card = None
@@ -1374,6 +1394,7 @@ class PanelWindow(QWidget):
         if not self._is_processing:
             return
         self._agent.stop()
+        self._hide_planning()
         self._poll_timer.stop()
         self._chunk_queue = queue.Queue()
         self._typewriter_flush()
@@ -1416,6 +1437,7 @@ class PanelWindow(QWidget):
             if kind == "chunk":
                 _, chunk_type, text = item
                 if chunk_type == "block_start":
+                    self._hide_planning()
                     self._on_block_start(text)
                 elif chunk_type == "thinking":
                     self._on_step_chunk("thinking", text)
@@ -1423,6 +1445,8 @@ class PanelWindow(QWidget):
                     self._on_step_chunk("speaking", text)
                 elif chunk_type == "action":
                     self._on_action_chunk(text)
+                elif chunk_type == "planning":
+                    self._show_planning()
                 self._scroll_to_bottom()
             elif kind == "done":
                 self._on_drain_done(item[1])
@@ -1548,6 +1572,7 @@ class PanelWindow(QWidget):
         """Agent 完成：停止轮询，闭合卡片，刷新打字机"""
         self._poll_timer.stop()
         self._chunk_queue = queue.Queue()
+        self._hide_planning()
         self._typewriter_flush()
         # 闭合当前激活的 action 卡片（如果有缓冲内容）
         action_content = self._action_buffer.strip()
@@ -1661,6 +1686,28 @@ class PanelWindow(QWidget):
         self._tw_buffer = ""
         self._tw_card = None
         self._action_buffer = ""
+
+    def _show_planning(self):
+        """显示'正在规划下一步'微光提示"""
+        self._planning_label.show()
+        self._planning_shimmer = 0.0
+        if not self._planning_timer.isActive():
+            self._planning_timer.start(40)
+
+    def _hide_planning(self):
+        """隐藏规划提示"""
+        self._planning_timer.stop()
+        self._planning_label.hide()
+
+    def _planning_shimmer_tick(self):
+        """微光动画：文字亮度波动"""
+        self._planning_shimmer = (self._planning_shimmer + 0.04) % 1.0
+        import math
+        alpha = 0.4 + 0.6 * math.sin(self._planning_shimmer * math.pi * 2)
+        alpha = max(0.25, alpha)
+        r, g, b = 142, 160, 200
+        self._planning_label.setStyleSheet(
+            f"QLabel {{ color: rgba({r},{g},{b},{int(alpha*255)}); background: transparent; padding: 2px 8px; }}")
 
     def _scroll_to_bottom(self):
         sb = self._scroll.verticalScrollBar()

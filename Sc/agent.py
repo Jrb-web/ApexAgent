@@ -80,13 +80,21 @@ class ApexAgent:
             messages.append({"role": "user", "content": user_message})
         all_thinking = ""
         all_speaking = ""
+        all_blocks = []         # 跨轮次累积所有块
+        all_exec_results = []   # 跨轮次累积所有执行结果
+        last_action = ""        # 最后一轮 action 字符串
 
         for iteration in range(MAX_ITERATIONS):
             if self._stop_event.is_set():
                 return {"thinking": all_thinking, "speaking": all_speaking,
                         "success": False, "error": "用户手动停止",
-                        "messages": messages, "action": "", "exec_result": None,
-                        "blocks": []}
+                        "messages": messages, "action": last_action,
+                        "exec_result": all_exec_results, "blocks": all_blocks}
+
+            # 第2轮起：通知 UI 正在规划下一步（微光提示）
+            if iteration > 0 and on_chunk:
+                on_chunk("planning", "")
+
             chunk_data = {"thinking": "", "speaking": "", "action": "", "error": None,
                           "blocks": [], "_block": None, "_block_content": ""}
 
@@ -133,7 +141,8 @@ class ApexAgent:
             if chunk_data["error"]:
                 return {"thinking": all_thinking, "speaking": all_speaking,
                         "success": False, "error": chunk_data["error"],
-                        "messages": messages, "blocks": chunk_data.get("blocks", [])}
+                        "messages": messages, "blocks": all_blocks,
+                        "action": last_action, "exec_result": all_exec_results}
 
             thinking = chunk_data.get("thinking", "")
             speaking = chunk_data.get("speaking", "")
@@ -144,24 +153,28 @@ class ApexAgent:
                 all_thinking += thinking + "\n"
             if speaking:
                 all_speaking += speaking + "\n"
+            if action:
+                last_action = action
 
-            # 如果没有 action 相关块，直接结束
+            # 累积本轮的 blocks
+            for b in blocks:
+                all_blocks.append(dict(b))
+
+            # 如果没有 action 相关块 → 任务结束
             has_action = any(b["type"] == "action" and b["content"].strip() for b in blocks)
             if not has_action:
                 messages.append({"role": "assistant",
                                  "content": speaking or thinking or "任务已完成。"})
                 return {"thinking": all_thinking, "speaking": all_speaking,
                         "success": True, "error": None, "messages": messages,
-                        "action": "", "exec_result": None, "blocks": blocks}
+                        "action": last_action, "exec_result": all_exec_results,
+                        "blocks": all_blocks}
 
-            # 顺序执行 blocks 中的 action
-            all_exec_results = []
-            all_blocks = []
+            # 顺序执行本轮 blocks 中的 action
             for bi, blk in enumerate(blocks):
-                all_blocks.append(dict(blk))
                 if blk["type"] == "action" and blk["content"].strip():
                     act = blk["content"]
-                    print(f"[agent] 第{bi+1}条action原始内容: {repr(act[:200])}")
+                    print(f"[agent] 轮次{iteration+1} 第{bi+1}条action: {repr(act[:200])}")
                     if not self._is_valid_action(act):
                         if on_chunk:
                             on_chunk("speaking",
@@ -186,21 +199,21 @@ class ApexAgent:
                         clean_summary = "（无文本输出）"
 
                     result_text = (
-                        f"[系统通知] 你的第{bi+1}条指令已执行完毕，结果：\n{clean_summary}"
+                        f"[系统通知] 上一条指令已执行完毕，结果：\n{clean_summary}"
                     )
                     messages.append({"role": "user", "content": result_text})
 
-            assistant_content = speaking or thinking
-            messages.append({"role": "assistant", "content": assistant_content})
+            # 保存本轮 assistant 回复，继续循环让 LLM 看到结果后决策下一步
+            assistant_content = speaking or thinking or ""
+            if assistant_content.strip():
+                messages.append({"role": "assistant", "content": assistant_content})
 
-            return {"thinking": all_thinking, "speaking": all_speaking,
-                    "success": True, "error": None, "messages": messages,
-                    "action": action, "exec_result": all_exec_results,
-                    "blocks": all_blocks}
+            # continue → 下一轮 LLM 调用，messages 含执行结果
 
         return {"thinking": all_thinking, "speaking": all_speaking,
                 "success": False, "error": f"推理轮次超过上限({MAX_ITERATIONS})",
-                "messages": messages, "action": "", "exec_result": None, "blocks": []}
+                "messages": messages, "action": last_action,
+                "exec_result": all_exec_results, "blocks": all_blocks}
 
     def _is_valid_action(self, action: str) -> bool:
         """校验 action 是否包含类XML指令标签（先标准化属性再解析）"""
