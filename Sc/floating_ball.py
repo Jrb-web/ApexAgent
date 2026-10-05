@@ -571,6 +571,7 @@ class CollapsibleThinkingBubble(QWidget):
         super().__init__(parent)
         self._collapsed = collapsed
         self._full_text = text
+        self._raw_buf = ""          # 累积原始文本用于全局重过滤
         self._glow_active = False
         self._shimmer_offset = 0.0
         self._setup_ui()
@@ -673,6 +674,13 @@ class CollapsibleThinkingBubble(QWidget):
         self._collapsed = collapsed
         self._update_toggle_icon()
         self._content.setVisible(not self._collapsed)
+
+    def appendRaw(self, raw_chunk: str):
+        """逐 token 累积原始文本，每次全局重过滤后替换整个卡片内容"""
+        self._raw_buf += raw_chunk
+        filtered = _filter_thinking_tags(self._raw_buf)
+        self._full_text = filtered
+        self._content.setText(filtered)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -1430,7 +1438,7 @@ class PanelWindow(QWidget):
             cur = self._active_card.text()
             if cur.startswith("⏳"):
                 self._active_card.setText("")
-            text = _filter_thinking_tags(text)
+            # 不过滤 — 逐 token 时原始文本累积，在 typewriter tick 中全局重过滤
         elif isinstance(self._active_card, GlowBorderBubble):
             cur = self._active_card.text()
             if cur.startswith("⏳"):
@@ -1500,10 +1508,12 @@ class PanelWindow(QWidget):
             chunk = self._tw_buffer[:2]
             self._tw_buffer = self._tw_buffer[2:]
             if self._tw_card:
-                # 展开 thinking 卡片
-                if isinstance(self._tw_card, CollapsibleThinkingBubble) and self._tw_card.isCollapsed():
-                    self._tw_card.setCollapsed(False)
-                self._tw_card.setText(self._tw_card.text() + chunk)
+                if isinstance(self._tw_card, CollapsibleThinkingBubble):
+                    if self._tw_card.isCollapsed():
+                        self._tw_card.setCollapsed(False)
+                    self._tw_card.appendRaw(chunk)
+                else:
+                    self._tw_card.setText(self._tw_card.text() + chunk)
                 self._tw_card.repaint()
             self._scroll_to_bottom()
         else:
@@ -1513,9 +1523,12 @@ class PanelWindow(QWidget):
         """立即展现所有剩余打字机缓冲字符"""
         self._tw_timer.stop()
         if self._tw_buffer and self._tw_card:
-            if isinstance(self._tw_card, CollapsibleThinkingBubble) and self._tw_card.isCollapsed():
-                self._tw_card.setCollapsed(False)
-            self._tw_card.setText(self._tw_card.text() + self._tw_buffer)
+            if isinstance(self._tw_card, CollapsibleThinkingBubble):
+                if self._tw_card.isCollapsed():
+                    self._tw_card.setCollapsed(False)
+                self._tw_card.appendRaw(self._tw_buffer)
+            else:
+                self._tw_card.setText(self._tw_card.text() + self._tw_buffer)
             self._tw_card.repaint()
         self._tw_buffer = ""
         self._tw_card = None
