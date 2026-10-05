@@ -45,6 +45,15 @@ def _xml_escape_attrs(tag_xml: str) -> str:
     )
 
 
+def _get_attr_or_text(attrs: dict, key: str, text: str) -> str:
+    """从属性或标签文本中取值。属性为空串时回退到文本内容。
+    兼容 <OpenExe 程序路径="">/path</OpenExe> 等 _xml_escape_attrs 标准化后的格式。"""
+    val = attrs.get(key, "").strip()
+    if val:
+        return val
+    return text.strip() if text else ""
+
+
 class ActionExecutor:
     """
     解析 action 中的类XML指令，执行对应的Windows操作
@@ -129,7 +138,7 @@ class ActionExecutor:
     # ================================================================
 
     def _handle_read_file(self, attrs: dict, text: str) -> str:
-        path = attrs.get("路径", text)
+        path = _get_attr_or_text(attrs, "路径", text)
         if not os.path.exists(path):
             return f"文件不存在: {path}"
         try:
@@ -142,7 +151,7 @@ class ActionExecutor:
             return f"读取文件失败: {str(e)}"
 
     def _handle_read_folder(self, attrs: dict, text: str) -> str:
-        path = attrs.get("路径", text)
+        path = _get_attr_or_text(attrs, "路径", text)
         if not os.path.exists(path):
             return f"文件夹不存在: {path}"
         try:
@@ -161,7 +170,7 @@ class ActionExecutor:
             return f"读取文件夹失败: {str(e)}"
 
     def _handle_search_file(self, attrs: dict, text: str) -> str:
-        folder_name = attrs.get("文件夹名", text)
+        folder_name = _get_attr_or_text(attrs, "文件夹名", text)
         search_root = attrs.get("根目录", os.path.expanduser("~"))
         results = []
         try:
@@ -178,7 +187,7 @@ class ActionExecutor:
             return f"搜索失败: {str(e)}"
 
     def _handle_remove_file(self, attrs: dict, text: str) -> str:
-        path = attrs.get("路径", text)
+        path = _get_attr_or_text(attrs, "路径", text)
         if not os.path.exists(path):
             return f"路径不存在: {path}"
         try:
@@ -193,14 +202,14 @@ class ActionExecutor:
             return f"删除失败: {str(e)}"
 
     def _handle_name_change(self, attrs: dict, text: str) -> str:
-        path = attrs.get("路径", text)
+        path = _get_attr_or_text(attrs, "路径", text)
         if not os.path.exists(path):
             return f"路径不存在: {path}"
         # 新名称通常在 text 中
         return f"重命名功能: 暂未实现完整逻辑 ({path})"
 
     def _handle_diff_json_file(self, attrs: dict, text: str) -> str:
-        path = attrs.get("路径", text)
+        path = _get_attr_or_text(attrs, "路径", text)
         return f"JSON修改功能: 暂未实现 ({path})"
 
     # ================================================================
@@ -208,7 +217,7 @@ class ActionExecutor:
     # ================================================================
 
     def _handle_open_exe(self, attrs: dict, text: str) -> str:
-        path = attrs.get("程序路径", text)
+        path = _get_attr_or_text(attrs, "程序路径", text)
         if not os.path.exists(path):
             if sys.platform.startswith('darwin'):
                 import glob as _glob
@@ -294,7 +303,7 @@ class ActionExecutor:
             return f"获取进程列表失败: {str(e)}"
 
     def _handle_kill_process(self, attrs: dict, text: str) -> str:
-        pid = attrs.get("pid", text)
+        pid = _get_attr_or_text(attrs, "pid", text)
         try:
             if sys.platform.startswith('win32'):
                 result = subprocess.run(
@@ -344,7 +353,7 @@ class ActionExecutor:
         return "获取活动窗口: 暂未实现（需要Windows API）"
 
     def _handle_get_disk_usage(self, attrs: dict, text: str) -> str:
-        path = attrs.get("路径", text)
+        path = _get_attr_or_text(attrs, "路径", text)
         try:
             import shutil
             usage = shutil.disk_usage(path)
@@ -396,14 +405,14 @@ class ActionExecutor:
     # ================================================================
 
     def _handle_close_window(self, attrs: dict, text: str) -> str:
-        title = attrs.get("窗口标题", text)
+        title = _get_attr_or_text(attrs, "窗口标题", text)
         return f"关闭窗口 '{title}': 暂未实现（需要Windows API）"
 
     def _handle_resize_window(self, attrs: dict, text: str) -> str:
         return "调整窗口大小: 暂未实现（需要Windows API）"
 
     def _handle_focus_window(self, attrs: dict, text: str) -> str:
-        title = attrs.get("标题", text)
+        title = _get_attr_or_text(attrs, "标题", text)
         return f"置顶窗口 '{title}': 暂未实现（需要Windows API）"
 
     # ================================================================
@@ -434,7 +443,7 @@ class ActionExecutor:
             return f"读取剪贴板失败: {str(e)}"
 
     def _handle_clipboard_write(self, attrs: dict, text: str) -> str:
-        content = attrs.get("文本", text)
+        content = _get_attr_or_text(attrs, "文本", text)
         try:
             if sys.platform.startswith('darwin'):
                 subprocess.run(
@@ -488,7 +497,7 @@ class ActionExecutor:
         return "服务控制: 暂未实现"
 
     def _handle_run_command(self, attrs: dict, text: str) -> str:
-        cmd = attrs.get("cmd", text)
+        cmd = _get_attr_or_text(attrs, "cmd", text)
         try:
             result = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=30,
