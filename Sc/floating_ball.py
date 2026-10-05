@@ -528,28 +528,25 @@ class HistoryDialog(QDialog):
 
 
 _THINKING_TAG_RE = re.compile(
-    r'<(/?)(speaking|action|thinking|step|plan|OpenExe|ReadFile|ReadFolder|'
+    r'[<＜](/?)(speaking|action|thinking|step|plan|OpenExe|ReadFile|ReadFolder|'
     r'SearchFile|RemoveFile|ReadRunning|KillProcess|GetSystemInfo|GetDiskUsage|'
     r'GetProcessList|GetNetworkStatus|GetActiveWindow|CloseWindow|ResizeWindow|'
     r'FocusWindow|Screenshot|MouseMove|MouseClick|ClipboardRead|ClipboardWrite|'
     r'RegistryRead|RegistryWrite|ServiceControl|Shutdown|NameChange|DiffJsonFile|'
-    r'RunCommand|GetDesktopFiles|while|for|If)\b[^>]*>',
+    r'RunCommand|GetDesktopFiles|while|for|If)\b[^>＞]*[>＞]',
     re.IGNORECASE,
 )
 
 # 命令小框 → QLabel 用 HTML span 渲染
 _CMD_PILL_HTML = (
     '<span style="'
-    'display:inline-block;'
-    'background:#2d3440;'
+    'background-color:#2d3440;'
     'color:#88c0d0;'
     'border:1.5px solid #5e81ac;'
     'border-radius:4px;'
-    'padding:0 6px;'
-    'margin:0 2px;'
-    'font-size:11px;'
+    'padding:1px 6px;'
+    'font-size:10px;'
     'font-weight:bold;'
-    'line-height:1.4;'
     '">'
     '⚡命令'
     '</span>'
@@ -557,14 +554,14 @@ _CMD_PILL_HTML = (
 
 
 def _filter_thinking_tags(text: str) -> str:
-    """把思考中的XML标签整体替换为⚡命令小框（安全转义）"""
+    """把思考中的XML标签替换为⚡命令小框（分段escape，防HTML破坏）"""
     # 先用标记位替换 XML 标签
     text = _THINKING_TAG_RE.sub('\x00CMD\x00', text)
-    # 转义残余的 < >
-    text = text.replace('<', '&lt;').replace('>', '&gt;')
-    # 恢复标记位为 HTML pill
-    text = text.replace('\x00CMD\x00', _CMD_PILL_HTML)
-    return text
+    # 分段转义：以 pill 为界拆分，每段单独转义 < >
+    parts = text.split('\x00CMD\x00')
+    escaped_parts = [p.replace('<', '&lt;').replace('>', '&gt;') for p in parts]
+    # 用HTML pill拼接，外层包span强制RichText渲染
+    return '<span>' + _CMD_PILL_HTML.join(escaped_parts) + '</span>'
 
 
 class CollapsibleThinkingBubble(QWidget):
