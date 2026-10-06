@@ -1,12 +1,26 @@
 """
 ApexAgent 闭环推理引擎 — 思考 → 说话 → 行动 → 循环
-每轮 LLM 调用采用流式输出，实时反馈 thinking / speaking chunk。
+
+闭环协议（每轮严格按此顺序追加消息，保证 user/assistant 严格交替）：
+
+    [user]      用户原始提问
+    [assistant] <speaking>…</speaking><action>…</action>   ← 本轮模型完整输出（含指令）
+    [user]      [系统通知] 指令执行结果                    ← 由本引擎注入，等价于一次全新的用户轮
+    [assistant] …                                          ← 模型基于结果继续推理
+    …… 直到某一轮不再输出 action，任务结束
+
+关键点：执行结果必须作为一条 **独立的 user 消息** 注入，且必须排在对应
+assistant 消息 **之后**。否则模型会看到"结果先于回复"，误判任务已完成，
+从而无法进入下一轮推理。
 """
 
 import threading
 import re
+import json
+import datetime
+import platform
 import xml.etree.ElementTree as ET
-from .llm import LLMClient
+from .llm import LLMClient, TOOL_RESULT_MARKER
 from .executor import ActionExecutor, _xml_escape_attrs
 
 # 正则：匹配 XML/HTML 尖括号标签，用于清洗 speaking 中的残留标签
@@ -24,6 +38,77 @@ def _clean_speaking(text: str) -> str:
 
 
 MAX_ITERATIONS = 8
+
+
+def _blocks_to_assistant_content(blocks: list) -> str:
+    """把本轮 blocks 还原成模型原始的 <speaking>/<action> 结构。
+
+    必须原样带回 action —— 否则下一轮模型看不到"我上一轮到底发了什么指令"，
+    闭环就断了，模型只能靠猜。
+    """
+    parts = []
+    for b in blocks:
+        t = b.get("type", "")
+        c = (b.get("content") or "").strip()
+        if not c:
+            continue
+        if t == "action":
+            parts.append(f"<action>{c}</action>")
+        else:
+            parts.append(f"<speaking>{_clean_speaking(c)}</speaking>")
+    return "".join(parts)
+
+
+def _format_tool_results(exec_pairs: list) -> str:
+    """把本轮所有指令的执行结果汇总成一条 user 消息。
+
+    exec_pairs: [(action_str, exec_result_dict), ...]
+    """
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    lines = [
+        f"{TOOL_RESULT_MARKER} 以下是上一轮指令的真实执行结果（非用户发言）。",
+        f"时间: {now} | 系统: {platform.system()} {platform.release()} "
+        f"| 架构: {platform.machine()}",
+        "",
+    ]
+    for idx, (act, res) in enumerate(exec_pairs, 1):
+        tag = _first_tag_name(act) or "未知指令"
+        lines.append(f"### 第 {idx} 条指令执行结果")
+        lines.append(f"指令: {act.strip()[:300]}")
+        if res.get("error"):
+            lines.append(f"状态: 失败（{res['error']}）")
+        else:
+            lines.append("状态: 已执行")
+        for r in res.get("results", []) or []:
+            if isinstance(r, dict):
+                name = r.get("instruction", "")
+                out = r.get("output", "") or ""
+                err = r.get("error", "") or ""
+                flag = "成功" if r.get("success", not err) else "失败"
+                body = out if out else err
+                if not body:
+                    body = "（无文本输出）"
+                lines.append(f"- {name} [{flag}]: {body}")
+            else:
+                lines.append(f"- {str(r)}")
+        if not res.get("results"):
+            lines.append("- （无文本输出）")
+        lines.append("")
+
+    lines.append(
+        "请基于以上真实执行结果继续推理：\n"
+        "1. 任务已完成 → 只输出 <speaking> 面向用户的总结</speaking>"
+        "<action> </action>\n"
+        "2. 任务未完成 → 输出 <speaking> 进展说明</speaking> "
+        "<action>下一条指令</action>\n"
+        "3. 严禁编造未出现在上述结果中的数据"
+    )
+    return "\n".join(lines)
+
+
+def _first_tag_name(action: str) -> str:
+    m = re.search(r'<([A-Za-z][A-Za-z0-9_()]*)\s*/?>', action or "")
+    return m.group(1) if m else ""
 
 
 class ApexAgent:
@@ -205,18 +290,28 @@ class ApexAgent:
                     if not duplicate:
                         speaking_parts.append(p)
                 all_speaking = "\n".join(speaking_parts)
-                messages.append({"role": "assistant",
-                                 "content": speaking or thinking or "任务已完成。"})
+                final_assistant = (_blocks_to_assistant_content(blocks)
+                                   or _clean_speaking(speaking) or thinking or "任务已完成。")
+                messages.append({"role": "assistant", "content": final_assistant})
                 return {"thinking": all_thinking, "speaking": all_speaking,
                         "success": True, "error": None, "messages": messages,
                         "action": last_action, "exec_result": all_exec_results,
                         "blocks": all_blocks}
 
+            # ---------------------------------------------------------
+            # 关键顺序：先落 assistant（含 action），再执行，再注入 user 结果
+            # ---------------------------------------------------------
+            assistant_content = _blocks_to_assistant_content(blocks)
+            if not assistant_content.strip():
+                assistant_content = _clean_speaking(speaking) or thinking or "（本轮无有效输出）"
+            messages.append({"role": "assistant", "content": assistant_content})
+
             # 顺序执行本轮 blocks 中的 action（去重：相同指令只执行一次）
             seen_actions = set()
+            exec_pairs = []          # [(action, result), ...] 本轮执行记录
             for bi, blk in enumerate(blocks):
                 if blk["type"] == "action" and blk["content"].strip():
-                    act = blk["content"]
+                    act = blk["content"].strip()
                     if act in seen_actions:
                         continue
                     seen_actions.add(act)
@@ -228,44 +323,33 @@ class ApexAgent:
                         if on_chunk:
                             on_chunk("speaking",
                                      "\n\n⚠️ 模型生成的指令格式错误，已跳过执行。\n")
+                        # 格式错误也要回灌，让模型知道失败并重试
+                        exec_pairs.append((act, {"success": False, "results": [],
+                                                  "error": "指令格式非法，未执行"}))
                         continue
 
                     exec_result = self._executor.execute(act)
                     all_exec_results.append(exec_result)
+                    exec_pairs.append((act, exec_result))
 
-                    results = exec_result.get("results", [])
-                    if results:
-                        outputs = []
-                        for r in results:
-                            if isinstance(r, dict):
-                                inst = r.get("instruction", "")
-                                out = r.get("output", "")
-                                outputs.append(f"[{inst}]: {out}")
-                            else:
-                                outputs.append(str(r))
-                        clean_summary = "\n".join(outputs)
-                    else:
-                        clean_summary = "（无文本输出）"
+                    # 实时把执行结果推给 UI（不等整个任务结束才刷新）
+                    if on_chunk:
+                        try:
+                            on_chunk("exec_result", json.dumps({
+                                "action": act,
+                                "result": exec_result,
+                            }, ensure_ascii=False))
+                        except Exception:
+                            pass
 
-                    result_text = (
-                        f"[系统信息] 时间: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M')}, "
-                        f"操作系统: {__import__('platform').system()} {__import__('platform').release()}, "
-                        f"架构: {__import__('platform').machine()}, 主机名: {__import__('platform').node()}\n\n"
-                        f"【命令执行结果，请基于此结果继续分析或操作】\n{clean_summary}"
-                    )
-                    messages.append({"role": "user", "content": result_text})
-                    print(f"[agent] 执行结果已注入 messages → LLM 下轮将看到此结果", flush=True)
+            # 一次性把本轮全部执行结果，作为一条全新的 user 消息注入上下文
+            if exec_pairs:
+                tool_msg = _format_tool_results(exec_pairs)
+                messages.append({"role": "user", "content": tool_msg})
+                print(f"[agent] 轮次{iteration+1} 执行结果已作为新一轮 user 消息注入 → LLM 继续推理", flush=True)
 
-            # 保存本轮 assistant 回复，继续循环让 LLM 看到结果后决策下一步
-            # 用本轮所有 speaking block 拼接（不用 chunk_data["speaking"]，那是第一个）
-            assistant_content = "\n".join(
-                _clean_speaking(b["content"]) for b in blocks if b["type"] == "speaking" and b["content"].strip()
-            ) or thinking or ""
-            if assistant_content.strip():
-                messages.append({"role": "assistant", "content": assistant_content})
-
-            print(f"[agent] 轮次{iteration+1} 完成，已执行 {len(seen_actions)} 条指令，继续下一轮推理...", flush=True)
-            # continue → 下一轮 LLM 调用，messages 含执行结果
+            print(f"[agent] 轮次{iteration+1} 完成，已执行 {len(exec_pairs)} 条指令，继续下一轮推理...", flush=True)
+            # continue → 下一轮 LLM 调用，messages 严格保持 user/assistant 交替
 
         return {"thinking": all_thinking,
                 "speaking": "\n".join(_clean_speaking(b["content"]) for b in all_blocks if b["type"] == "speaking" and b["content"].strip()),
@@ -274,25 +358,28 @@ class ApexAgent:
                 "exec_result": all_exec_results, "blocks": all_blocks}
 
     def _is_valid_action(self, action: str) -> bool:
-        """校验 action 是否包含类XML指令标签（先标准化属性再解析）"""
+        """校验 action 是否包含类XML指令标签。
+
+        注意：不能只判断能否被 ET 解析 —— 纯文本（如"我来帮你看看"）包进
+        <root> 后同样是合法 XML（退化成文本节点），会让垃圾指令直接进入执行器。
+        必须确认解析结果里至少存在一个真实的子元素标签。
+        """
         if not action or not action.strip():
             return True
-        # 先尝试直接XML解析
-        try:
-            ET.fromstring(f"<root>{action}</root>")
-            return True
-        except ET.ParseError:
-            pass
-        # 再尝试标准化属性后再解析（兼容 <OpenExe 程序路径>xxx 等非标准格式）
-        try:
-            normalized = _xml_escape_attrs(action)
-            ET.fromstring(f"<root>{normalized}</root>")
-            return True
-        except ET.ParseError:
-            pass
+
+        for candidate in (action, _xml_escape_attrs(action)):
+            try:
+                root = ET.fromstring(f"<root>{candidate}</root>")
+            except ET.ParseError:
+                continue
+            # 至少要有一个真实元素（标签名存在）
+            if len(list(root)) > 0:
+                return True
+
         # 正则回退：至少有一个类XML标签
         tags = re.findall(r'</?[A-Za-z][A-Za-z0-9_()]*[^>]*>', action)
         if len(tags) >= 1:
             return True
+
         print(f"[_is_valid_action] 模型输出无法解析: {repr(action[:300])}")
         return False

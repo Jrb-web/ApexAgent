@@ -835,6 +835,8 @@ class ActionCard(QFrame):
         self._state = "streaming"  # streaming | ready | done
         self._commands = []        # [(en, zh), ...]
         self._results = []         # [(en, success, output), ...]
+        self._action_text = ""     # 本卡片对应的指令原文（流式累积）
+        self._results_filled = False  # 是否已回填执行结果，避免重复覆盖
         self._shimmer_offset = 0.0
         self._setup_ui()
         self._start_shimmer()
@@ -1352,13 +1354,31 @@ class PanelWindow(QWidget):
         # 显示停止按钮
         self._stop_btn.show()
 
-        # 构建对话上下文（历史消息含时间戳）
+        # 构建对话上下文
+        # 优先复用上一轮保存的完整 agent 上下文（含 [系统通知] 工具结果），
+        # 这样 AI 能记住上轮实际执行过什么、拿到了什么数据
         context_messages = []
         all_msgs = conv.get("messages", [])
         # 排除当前用户消息（它会通过 user_message 参数单独传给 agent，避免重复）
         if all_msgs and all_msgs[-1]["role"] == "user":
             all_msgs = all_msgs[:-1]
-        for msg in all_msgs:
+
+        last_agent_ctx = None
+        for m in all_msgs:
+            if m.get("role") == "assistant" and m.get("agent_context"):
+                last_agent_ctx = m["agent_context"]
+
+        if last_agent_ctx:
+            # 剔除末尾的 assistant（就是刚跑完那一轮），用户新消息会接在后面
+            ctx = [dict(x) for x in last_agent_ctx]
+            while ctx and ctx[-1].get("role") == "assistant":
+                ctx.pop()
+            context_messages = [
+                {"role": x.get("role", "user"), "content": x.get("content", "")}
+                for x in ctx if x.get("role") in ("user", "assistant")
+            ]
+
+        for msg in [] if context_messages else all_msgs:
             if msg["role"] in ("user", "assistant"):
                 ctx_msg = {"role": msg["role"], "content": msg["content"]}
                 if msg["role"] == "user":
@@ -1482,6 +1502,8 @@ class PanelWindow(QWidget):
                     self._on_step_chunk("speaking", text)
                 elif chunk_type == "action":
                     self._on_action_chunk(text)
+                elif chunk_type == "exec_result":
+                    self._on_exec_result(text)
                 elif chunk_type == "planning":
                     self._iteration += 1
                     self._fresh_iteration = True
@@ -1500,18 +1522,24 @@ class PanelWindow(QWidget):
         # 闭合当前 action 卡片
         if isinstance(self._active_card, ActionCard) and self._action_buffer.strip():
             cmds = _parse_action_card_info(self._action_buffer.strip())
-            if cmds:
+            # 已回填结果的卡片不要被重置回「等待执行」
+            if cmds and not self._active_card._results_filled:
                 self._active_card.set_commands(cmds)
         self._active_card = None
         self._action_buffer = ""
 
-        # 新轮次但 Ollama 没产生 thinking（无 thinking chunk）→ 兜底创建思考卡片
-        if self._fresh_iteration:
+        # 新轮次但 LLM 没产生 thinking（无 thinking chunk）→ 兜底创建思考卡片
+        # 注意：block_start 只会为 speaking/action 触发（thinking 是独立 chunk），
+        # 所以这里只在确实是 thinking 块时创建占位，否则会多出空气泡
+        if self._fresh_iteration and block_type == "thinking":
             self._fresh_iteration = False
             placeholder = self._create_step_card("thinking")
             placeholder.setText("分析执行结果，规划下一步...")
             placeholder.setCollapsed(False)
             self._active_card = placeholder
+        elif self._fresh_iteration and block_type in ("speaking", "action"):
+            # 模型直接开始输出内容 → 清掉占位标记，不额外造 thinking 气泡
+            self._fresh_iteration = False
 
         # LLM 思考完毕，开始输出内容 → 隐藏「正在规划下一步」
         self._hide_planning()
@@ -1560,6 +1588,44 @@ class PanelWindow(QWidget):
             self._msg_layout.addWidget(self._active_card)
             self._msg_layout.addStretch()
             self._step_cards.append(self._active_card)
+        # 记录当前累积的指令原文，供 exec_result 精确匹配回填
+        self._active_card._action_text = self._action_buffer.strip()
+
+    def _on_exec_result(self, payload: str):
+        """Agent 执行完一条指令后实时回填结果（不再等整个任务结束）"""
+        try:
+            data = json.loads(payload)
+        except Exception:
+            return
+        action = (data.get("action") or "").strip()
+        result = data.get("result") or {}
+
+        # 先把 action 卡片的命令列表补全（流式阶段可能还没闭合）
+        target = None
+        for card in self._step_cards:
+            if not isinstance(card, ActionCard):
+                continue
+            if card._results_filled:
+                continue
+            card_action = (getattr(card, "_action_text", "") or "").strip()
+            if card_action and action and card_action == action:
+                target = card
+                break
+            if target is None:
+                target = card  # 兜底：第一个未填充的卡片
+
+        if target is None:
+            return
+
+        cmds = _parse_action_card_info(action)
+        if cmds and not target._commands:
+            target.set_commands(cmds)
+        elif cmds:
+            target.set_commands(cmds)
+
+        target.set_results(result)
+        target._results_filled = True
+        self._scroll_to_bottom()
 
     def _create_step_card(self, step_type: str):
         """创建步骤卡片：thinking→CollapsibleThinkingBubble, speaking→GlowBorderBubble"""
@@ -1648,7 +1714,7 @@ class PanelWindow(QWidget):
         action_content = self._action_buffer.strip()
         if action_content and isinstance(self._active_card, ActionCard):
             cmds = _parse_action_card_info(action_content)
-            if cmds:
+            if cmds and not self._active_card._results_filled:
                 self._active_card.set_commands(cmds)
             elif not self._active_card._commands:
                 self._active_card.hide()
@@ -1710,16 +1776,20 @@ class PanelWindow(QWidget):
                     break
 
         # 填充 action 卡片执行结果
+        # 正常情况下已由 exec_result chunk 实时回填，这里只兜底未填充的卡片
         exec_results = result.get("exec_result", [])
         if isinstance(exec_results, list):
             action_cards = [c for c in self._step_cards if isinstance(c, ActionCard)]
-            for i, ac in enumerate(action_cards):
+            pending = [c for c in action_cards if not c._results_filled]
+            for i, ac in enumerate(pending):
                 if i < len(exec_results) and exec_results[i]:
                     ac.set_results(exec_results[i])
+                    ac._results_filled = True
         elif isinstance(exec_results, dict) and exec_results:
             for c in self._step_cards:
-                if isinstance(c, ActionCard):
+                if isinstance(c, ActionCard) and not c._results_filled:
                     c.set_results(exec_results)
+                    c._results_filled = True
                     break
 
         # 保存到对话
@@ -1743,6 +1813,7 @@ class PanelWindow(QWidget):
 
         conv = ConversationStore.load(self._conv_id)
         if conv:
+            agent_messages = result.get("messages", [])
             conv["messages"].append({
                 "role": "assistant",
                 "content": final_text,
@@ -1751,8 +1822,9 @@ class PanelWindow(QWidget):
                 "action_blocks": action_blocks,
                 "timestamp": datetime.now().isoformat()
             })
-            agent_messages = result.get("messages", [])
-            conv["_agent_context"] = agent_messages
+            # 完整 agent 上下文（含每轮 tool 结果回灌）随消息一起保存，
+            # 下一轮重建上下文时优先复用，AI 才记得上轮查到了什么
+            conv["messages"][-1]["agent_context"] = agent_messages
             ConversationStore.save(conv)
 
         # 清空引用但保留卡片
