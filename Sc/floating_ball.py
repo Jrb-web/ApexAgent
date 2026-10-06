@@ -1504,6 +1504,15 @@ class PanelWindow(QWidget):
                 self._active_card.set_commands(cmds)
         self._active_card = None
         self._action_buffer = ""
+
+        # 新轮次但 Ollama 没产生 thinking（无 thinking chunk）→ 兜底创建思考卡片
+        if self._fresh_iteration:
+            self._fresh_iteration = False
+            placeholder = self._create_step_card("thinking")
+            placeholder.setText("分析执行结果，规划下一步...")
+            placeholder.setCollapsed(False)
+            self._active_card = placeholder
+
         # LLM 思考完毕，开始输出内容 → 隐藏「正在规划下一步」
         self._hide_planning()
 
@@ -1515,8 +1524,18 @@ class PanelWindow(QWidget):
             self._active_card = None
             self._fresh_iteration = False
             # planning 保持可见 — 由 _on_block_start 或 _on_drain_done 隐藏
-        if self._active_card is None or not isinstance(self._active_card, (CollapsibleThinkingBubble, GlowBorderBubble)):
-            self._active_card = self._create_step_card(chunk_type)
+        # 确保 active_card 类型与 chunk_type 匹配（thinking→CollapsibleThinkingBubble, speaking→GlowBorderBubble）
+        if chunk_type == "thinking":
+            if not isinstance(self._active_card, CollapsibleThinkingBubble):
+                self._typewriter_flush()
+                self._active_card = self._create_step_card("thinking")
+        elif chunk_type == "speaking":
+            if not isinstance(self._active_card, GlowBorderBubble):
+                self._typewriter_flush()
+                self._active_card = self._create_step_card("speaking")
+        else:
+            if self._active_card is None:
+                self._active_card = self._create_step_card(chunk_type)
         if not self._tw_timer.isActive():
             self._tw_timer.start(25)
         self._tw_card = self._active_card

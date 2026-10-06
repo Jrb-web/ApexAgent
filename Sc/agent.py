@@ -248,7 +248,10 @@ class ApexAgent:
                         clean_summary = "（无文本输出）"
 
                     result_text = (
-                        f"[系统通知] 上一条指令已执行完毕，结果：\n{clean_summary}"
+                        f"[系统信息] 时间: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M')}, "
+                        f"操作系统: {__import__('platform').system()} {__import__('platform').release()}, "
+                        f"架构: {__import__('platform').machine()}, 主机名: {__import__('platform').node()}\n\n"
+                        f"【命令执行结果，请基于此结果继续分析或操作】\n{clean_summary}"
                     )
                     messages.append({"role": "user", "content": result_text})
                     print(f"[agent] 执行结果已注入 messages → LLM 下轮将看到此结果", flush=True)
