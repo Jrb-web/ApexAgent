@@ -1154,6 +1154,8 @@ class PanelWindow(QWidget):
         self._msg_layout.addWidget(self._hint_label)
 
         # ---- 规划提示（闭环多轮调用时闪现） ----
+        self._iteration = 0  # 当前推理轮次
+        self._fresh_iteration = False  # 新轮次标记，下次 thinking 创建新气泡
         self._planning_label = QLabel("正在规划下一步...")
         self._planning_label.setFont(QFont("Microsoft YaHei", 9))
         self._planning_label.setStyleSheet("""
@@ -1377,6 +1379,8 @@ class PanelWindow(QWidget):
 
         # 重置队列状态（线程安全）
         self._hide_planning()
+        self._iteration = 0
+        self._fresh_iteration = False
         self._chunk_queue = queue.Queue()
         self._tw_buffer = ""
         self._tw_card = None
@@ -1479,6 +1483,8 @@ class PanelWindow(QWidget):
                 elif chunk_type == "action":
                     self._on_action_chunk(text)
                 elif chunk_type == "planning":
+                    self._iteration += 1
+                    self._fresh_iteration = True
                     self._show_planning()
                 self._scroll_to_bottom()
             elif kind == "done":
@@ -1498,11 +1504,16 @@ class PanelWindow(QWidget):
                 self._active_card.set_commands(cmds)
         self._active_card = None
         self._action_buffer = ""
-        # 延迟隐藏规划（_hide_planning 已内置最小显示时间）
-        self._hide_planning()
+        # 不再在这里 hide_planning → planning 在下一个 thinking chunk 到达时隐藏
 
     def _on_step_chunk(self, chunk_type: str, text: str):
         """thinking/speaking 流式块 → 并入打字机"""
+        # 新轮次 + thinking → 创建全新思考气泡
+        if chunk_type == "thinking" and self._fresh_iteration:
+            self._typewriter_flush()
+            self._active_card = None
+            self._fresh_iteration = False
+            self._hide_planning()
         if self._active_card is None or not isinstance(self._active_card, (CollapsibleThinkingBubble, GlowBorderBubble)):
             self._active_card = self._create_step_card(chunk_type)
         if not self._tw_timer.isActive():
@@ -1607,6 +1618,7 @@ class PanelWindow(QWidget):
         """Agent 完成：停止轮询，闭合卡片，刷新打字机"""
         self._poll_timer.stop()
         self._chunk_queue = queue.Queue()
+        self._fresh_iteration = False
         self._hide_planning()
         self._typewriter_flush()
         # 如果已完成（如 stop_timeout 先触发），跳过
@@ -1741,6 +1753,7 @@ class PanelWindow(QWidget):
         """显示'正在规划下一步'微光提示"""
         import time
         try:
+            print(f"[ui] 显示「正在规划下一步...」轮次 {self._iteration}", flush=True)
             # 取消之前的延迟隐藏
             if hasattr(self, '_planning_hide_timer'):
                 self._planning_hide_timer.stop()
