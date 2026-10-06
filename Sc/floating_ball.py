@@ -1504,16 +1504,17 @@ class PanelWindow(QWidget):
                 self._active_card.set_commands(cmds)
         self._active_card = None
         self._action_buffer = ""
-        # 不再在这里 hide_planning → planning 在下一个 thinking chunk 到达时隐藏
+        # LLM 思考完毕，开始输出内容 → 隐藏「正在规划下一步」
+        self._hide_planning()
 
     def _on_step_chunk(self, chunk_type: str, text: str):
         """thinking/speaking 流式块 → 并入打字机"""
-        # 新轮次 + thinking → 创建全新思考气泡
+        # 新轮次 + thinking → 创建全新思考气泡，但保留 planning（等 block_start 才隐藏）
         if chunk_type == "thinking" and self._fresh_iteration:
             self._typewriter_flush()
             self._active_card = None
             self._fresh_iteration = False
-            self._hide_planning()
+            # planning 保持可见 — 由 _on_block_start 或 _on_drain_done 隐藏
         if self._active_card is None or not isinstance(self._active_card, (CollapsibleThinkingBubble, GlowBorderBubble)):
             self._active_card = self._create_step_card(chunk_type)
         if not self._tw_timer.isActive():
