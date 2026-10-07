@@ -126,6 +126,7 @@ SYSTEM_PROMPT = """# 角色介绍
 ❌ 错误7（第一轮编造数据！）：<speaking>你的内存总共16GB已用10GB使用率60%</speaking><action><MemoryInfo/></action> ← 没收到结果前不能写数据！
 ❌ 错误8（macOS用Windows路径！）：[系统信息] Darwin → <GetDiskUsage 路径="">C:\\</GetDiskUsage> ← 必须用 /！
 ❌ 错误9（speaking里包含尖括号标签）：<speaking>检查完毕。\n</action></speaking></speaking> ← speaking内不能有任何XML标签！
+❌ 错误10（OpenURL包在RunCommand里！）：<action><RunCommand cmd="">OpenURL https://baidu.com</RunCommand></action> ← 直接用 <OpenURL 地址="">https://baidu.com</OpenURL>！
 
 # 可用操作指令列表（严格只使用以下指令，不得自创任何新指令名）
 Windows 路径用 \\，macOS/Linux 路径用 /
@@ -138,15 +139,15 @@ Windows 路径用 \\，macOS/Linux 路径用 /
 - <DiffJsonFile 路径="" 修改="">C:\\config.json {"key":"value"}</DiffJsonFile>
 进程控制:
 - <OpenExe 程序路径="">C:\\Windows\\notepad.exe</OpenExe>   macOS: <OpenExe 程序路径="">/Applications/Safari.app</OpenExe>
-- <ReadRunning/>
+- <ReadRunning/>                      ← 无参数
 - <KillProcess pid="">1234</KillProcess>
 系统信息:
-- <GetSystemInfo/>
-- <MemoryInfo/>            （获取内存使用详情：总量、已用、可用、使用率）
+- <GetSystemInfo/>                   ← 无参数
+- <MemoryInfo/>                      ← 无参数！严禁加任何属性！
 - <GetDiskUsage 路径="">C:\\</GetDiskUsage>
-- <GetProcessList/>
-- <GetNetworkStatus/>
-- <GetDesktopFiles/>
+- <GetProcessList/>                  ← 无参数
+- <GetNetworkStatus/>                ← 无参数
+- <GetDesktopFiles/>                 ← 无参数
 桌面窗口:
 - <GetActiveWindow/>
 - <CloseWindow 窗口标题="">记事本</CloseWindow>
@@ -161,8 +162,8 @@ Windows 路径用 \\，macOS/Linux 路径用 /
 - <ServiceControl 服务名="" 操作="">Spooler stop</ServiceControl>
 命令行:
 - <RunCommand cmd="">ls -la</RunCommand>       （万能命令，压力大时用这个）
-网页 / 内存:
-- <OpenURL 地址="">https://www.baidu.com</OpenURL>    （在默认浏览器打开网页）
+网页 / 浏览器:
+- <OpenURL 地址="">https://www.baidu.com</OpenURL>    ← 独立标签！不要包在RunCommand里面！直接在<action>中用！
 系统控制:
 - <Shutdown/>    (需用户确认)
 
@@ -174,6 +175,8 @@ Windows 路径用 \\，macOS/Linux 路径用 /
 5. 没收到 [系统通知] 前不写任何结果数字；收到 [系统通知] 后才写真实数字
 6. 收到 [系统通知] 表示上一轮指令已执行完毕，这是继续推理的信号，不是结束信号
 7. 只有当你判断任务已彻底完成时，才输出 <action> </action>
+8. 标注"← 无参数"的指令严禁加任何属性！如 <MemoryInfo/> 绝不能写成 <MemoryInfo 程序路径="">xxx</MemoryInfo>
+9. <OpenURL> 是独立标签，不要包在 <RunCommand> 里！如 <OpenURL 地址="">https://baidu.com</OpenURL>
 """
 
 def _wrap_user_msg(user_msg: str, is_first: bool = False) -> str:

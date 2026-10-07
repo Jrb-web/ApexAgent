@@ -1824,7 +1824,8 @@ class PanelWindow(QWidget):
             })
             # 完整 agent 上下文（含每轮 tool 结果回灌）随消息一起保存，
             # 下一轮重建上下文时优先复用，AI 才记得上轮查到了什么
-            conv["messages"][-1]["agent_context"] = agent_messages
+            # 但限制保留最近 20 条避免上下文爆炸
+            conv["messages"][-1]["agent_context"] = agent_messages[-20:] if len(agent_messages) > 20 else agent_messages
             ConversationStore.save(conv)
 
         # 清空引用但保留卡片
