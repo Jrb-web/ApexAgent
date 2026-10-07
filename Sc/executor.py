@@ -570,6 +570,38 @@ class ActionExecutor:
             return "未找到需要关闭的浏览器进程"
         return "关闭浏览器结果:\n" + "\n".join(results) if results else "未检测到浏览器运行"
 
+    def _handle_close_app(self, attrs: dict, text: str) -> str:
+        """关闭指定应用（跨平台：通过应用名关闭任意程序）"""
+        app_name = _get_attr_or_text(attrs, "应用名", text)
+        if not app_name:
+            return "未指定应用名称"
+
+        plat = sys.platform
+        try:
+            if plat == "darwin":
+                script = f'tell application "{app_name}" to quit'
+                r = subprocess.run(["osascript", "-e", script],
+                                   capture_output=True, text=True, timeout=10)
+                if r.returncode == 0:
+                    return f"已关闭应用: {app_name}"
+                err = r.stderr.strip()
+                return f"关闭失败: {err}" if err else f"未找到应用: {app_name}"
+            elif plat.startswith("win32"):
+                proc_name = app_name if app_name.endswith(".exe") else app_name + ".exe"
+                r = subprocess.run(["taskkill", "/IM", proc_name, "/F"],
+                                   capture_output=True, text=True, timeout=10)
+                if r.returncode == 0:
+                    return f"已关闭进程: {proc_name}"
+                return f"未找到进程: {proc_name}"
+            else:
+                r = subprocess.run(["pkill", "-f", app_name],
+                                   capture_output=True, text=True, timeout=10)
+                if r.returncode == 0:
+                    return f"已关闭进程: {app_name}"
+                return f"未找到进程: {app_name}"
+        except Exception as e:
+            return f"关闭应用失败: {str(e)}"
+
     def _handle_get_process_list(self, attrs: dict, text: str) -> str:
         return self._handle_read_running(attrs, text)
 
@@ -897,6 +929,8 @@ class ActionExecutor:
         "OpenURL": _handle_open_url,
         # 关闭浏览器
         "CloseBrowser": _handle_close_browser,
+        # 关闭指定应用
+        "CloseApp": _handle_close_app,
         # 循环逻辑
         "while": _handle_while,
         "for": _handle_for,
