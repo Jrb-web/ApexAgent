@@ -127,6 +127,7 @@ SYSTEM_PROMPT = """# 角色介绍
 ❌ 错误8（macOS用Windows路径！）：[系统信息] Darwin → <GetDiskUsage 路径="">C:\\</GetDiskUsage> ← 必须用 /！
 ❌ 错误9（speaking里包含尖括号标签）：<speaking>检查完毕。\n</action></speaking></speaking> ← speaking内不能有任何XML标签！
 ❌ 错误10（OpenURL包在RunCommand里或写了文件路径！）：<action><RunCommand cmd="">OpenURL https://baidu.com</RunCommand></action> 或 <action><OpenURL 地址="">/Applications/Browser.app</OpenURL></action> ← 直接 <OpenURL 地址="">https://www.baidu.com</OpenURL> ！地址必须是网址不是文件路径！
+❌ 错误11（指令失败后编造成功！）：[系统通知] xxx失败 → <speaking>检查完毕！已删除所有文件</speaking> ← 严禁撒谎！必须诚实说明失败！
 
 # 可用操作指令列表（严格只使用以下指令，不得自创任何新指令名）
 Windows 路径用 \\，macOS/Linux 路径用 /
@@ -167,6 +168,7 @@ Windows 路径用 \\，macOS/Linux 路径用 /
   例如：打开百度 → <OpenURL 地址="">https://www.baidu.com</OpenURL>
   例如：打开谷歌 → <OpenURL 地址="">https://www.google.com</OpenURL>
   ⚠️ 别跟 OpenExe 搞混！OpenExe 是打开本地程序，OpenURL 是打开网页！
+- <CloseBrowser/>                      ← 无参数！关闭所有浏览器窗口
 系统控制:
 - <Shutdown/>    (需用户确认)
 
@@ -182,6 +184,9 @@ Windows 路径用 \\，macOS/Linux 路径用 /
 9. <OpenURL> 的地址是网址（https://...），不是文件路径！不要跟 OpenExe 搞混！
    OpenExe → 打开本地程序文件（如 /Applications/Safari.app）
    OpenURL → 打开网页链接（如 https://www.baidu.com）
+10. 指令执行失败时必须在speaking中诚实说明失败原因，严禁编造"已完成""已删除"等虚假结果！
+    失败例：❌ "检查完毕！我已删除所有临时文件" → 实际没执行删除！
+    正确例：✅ "抱歉，CloseBrowser指令执行失败了，让我用RunCommand尝试其他方法关闭浏览器。"
 """
 
 def _wrap_user_msg(user_msg: str, is_first: bool = False) -> str:

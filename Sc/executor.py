@@ -522,6 +522,54 @@ class ActionExecutor:
         except Exception as e:
             return f"打开URL失败: {str(e)}"
 
+    def _handle_close_browser(self, attrs: dict, text: str) -> str:
+        """关闭浏览器（跨平台：Quit Safari/Chrome/Edge/Firefox）"""
+        browsers = {
+            "darwin": [("Safari", 'tell application "Safari" to quit'),
+                        ("Google Chrome", 'tell application "Google Chrome" to quit'),
+                        ("Firefox", 'tell application "Firefox" to quit'),
+                        ("Microsoft Edge", 'tell application "Microsoft Edge" to quit')],
+            "win32": [("chrome.exe",), ("firefox.exe",), ("msedge.exe",), ("iexplore.exe",)],
+            "linux": [("firefox",), ("google-chrome",), ("chromium-browser",)],
+        }
+        plat = sys.platform
+        if plat.startswith("win32"):
+            plat = "win32"
+        elif plat == "darwin":
+            plat = "darwin"
+        else:
+            plat = "linux"
+
+        results = []
+        for entry in browsers.get(plat, []):
+            try:
+                if plat == "darwin":
+                    name, script = entry
+                    r = subprocess.run(["osascript", "-e", script],
+                                       capture_output=True, text=True, timeout=10)
+                    ok = r.returncode == 0
+                    err_detail = (r.stderr.strip() or "?")
+                    status = "已关闭" if ok else f"失败({err_detail})"
+                    results.append(f"  {name}: {status}")
+                elif plat == "win32":
+                    name = entry[0]
+                    r = subprocess.run(["taskkill", "/IM", name, "/F"],
+                                       capture_output=True, text=True, timeout=10)
+                    ok = r.returncode == 0
+                    results.append(f"  {name}: {'已关闭' if ok else '未运行或失败'}")
+                else:
+                    name = entry[0]
+                    r = subprocess.run(["pkill", "-f", name],
+                                       capture_output=True, text=True, timeout=10)
+                    ok = r.returncode == 0
+                    results.append(f"  {name}: {'已关闭' if ok else '未运行或失败'}")
+            except Exception as e:
+                results.append(f"  {entry[0] if plat == 'darwin' else entry[0]}: 异常({e})")
+
+        if not results:
+            return "未找到需要关闭的浏览器进程"
+        return "关闭浏览器结果:\n" + "\n".join(results) if results else "未检测到浏览器运行"
+
     def _handle_get_process_list(self, attrs: dict, text: str) -> str:
         return self._handle_read_running(attrs, text)
 
@@ -847,6 +895,8 @@ class ActionExecutor:
         # 内存 / 网页
         "MemoryInfo": _handle_memory_info,
         "OpenURL": _handle_open_url,
+        # 关闭浏览器
+        "CloseBrowser": _handle_close_browser,
         # 循环逻辑
         "while": _handle_while,
         "for": _handle_for,
