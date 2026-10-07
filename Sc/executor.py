@@ -502,13 +502,22 @@ class ActionExecutor:
 
     def _handle_open_url(self, attrs: dict, text: str) -> str:
         url = _get_attr_or_text(attrs, "地址", text)
+        # 自动补全协议头
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url.lstrip("/")
         try:
             if sys.platform.startswith('win32'):
-                subprocess.run(["cmd", "/c", "start", "", url], timeout=10)
+                result = subprocess.run(["cmd", "/c", "start", "", url],
+                                        capture_output=True, text=True, timeout=10)
             elif sys.platform == "darwin":
-                subprocess.run(["open", url], timeout=10)
+                result = subprocess.run(["open", url],
+                                        capture_output=True, text=True, timeout=10)
             else:
-                subprocess.run(["xdg-open", url], timeout=10)
+                result = subprocess.run(["xdg-open", url],
+                                        capture_output=True, text=True, timeout=10)
+            if result.returncode != 0:
+                err = result.stderr.strip()
+                return f"打开URL失败: {err}" if err else f"打开URL失败，返回码 {result.returncode}"
             return f"已在默认浏览器中打开: {url}"
         except Exception as e:
             return f"打开URL失败: {str(e)}"
